@@ -35,13 +35,17 @@ include = [
 workspace = true
 
 [dependencies]
-base64 = "0.22"
-curve25519-dalek = "4.1"
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-p256 = { version = "0.13.2", features = ["ecdsa"] }
-sha2 = "0.10"
-signature = "2.2"
-tracing = "0.1"
+base64 = { workspace = true }
+curve25519-dalek = { version = "4.1", default-features = false, features = [
+    "alloc",
+    "precomputed-tables",
+    "zeroize",
+] }
+ed25519-dalek = { workspace = true }
+p256 = { workspace = true }
+sha2 = { version = "0.10", default-features = false }
+signature = { version = "2.2", default-features = false }
+tracing = { workspace = true }
 yaml-sigil-core = { workspace = true, default-features = false }
 yaml-sigil-traits = { workspace = true, default-features = false }
 yaml-sigil-transcription = { workspace = true, default-features = false }
@@ -51,6 +55,6 @@ json-schema-validate = ["yaml-sigil-core/json-schema-validate"]
 
 [dev-dependencies]
 buffa = { workspace = true }
-rand_core = { workspace = true }
+rand_core = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 yaml-sigil-signing = { workspace = true }

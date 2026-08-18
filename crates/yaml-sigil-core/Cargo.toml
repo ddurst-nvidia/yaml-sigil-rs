@@ -50,13 +50,13 @@ path = "src/lib.rs"
 json-schema-validate = ["dep:jsonschema", "dep:serde_json"]
 
 [dependencies]
-base64 = "0.22"
-serde = { version = "1", features = ["derive"] }
+base64 = { workspace = true }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 noyalib = { workspace = true }
-thiserror = "2"
-tracing = "0.1"
+thiserror = { version = "2", default-features = false }
+tracing = { workspace = true }
 yaml-sigil-traits = { workspace = true, default-features = false }
-buffa = { workspace = true }
+buffa = { workspace = true, default-features = false }
 jsonschema = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

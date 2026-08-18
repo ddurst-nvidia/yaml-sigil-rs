@@ -33,12 +33,12 @@ include = [
 workspace = true
 
 [dependencies]
-base64 = "0.22"
-buffa = { workspace = true }
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-p256 = { version = "0.13.2", features = ["ecdsa"] }
-thiserror = "2"
-tracing = "0.1"
+base64 = { workspace = true }
+buffa = { workspace = true, default-features = false }
+ed25519-dalek = { workspace = true }
+p256 = { workspace = true }
+thiserror = { version = "2", default-features = false }
+tracing = { workspace = true }
 yaml-sigil-core = { workspace = true, default-features = false }
 yaml-sigil-traits = { workspace = true, default-features = false }
 yaml-sigil-transcription = { workspace = true, default-features = false }
