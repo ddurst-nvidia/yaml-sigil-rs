@@ -212,7 +212,7 @@ pub fn serialize_signature_document(doc: &SignatureDocument) -> Result<String, C
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
+    use alloc::{format, string::String, vec};
 
     use crate::error::CoreError;
 

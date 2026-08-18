@@ -4,6 +4,7 @@
 //! Workspace maintenance tasks. Invoke via `cargo xtask <COMMAND>` from the repo root.
 
 mod ci;
+mod no_std;
 mod package_content;
 mod spec_update;
 mod versions;
@@ -41,6 +42,8 @@ enum Task {
         #[arg(long, value_name = "PATH")]
         candidate_root: Option<PathBuf>,
     },
+    /// Validate the alloc-only public API and normal dependency graph.
+    NoStd,
     /// Compare modeled source-package paths with committed exact inventories.
     PackageContent,
     /// Record the E2E test with samply into `target/profile/profile.json`.
@@ -90,6 +93,7 @@ fn main() -> Result<()> {
             let candidate = resolve_candidate_root(candidate_root.as_deref().unwrap_or(&root))?;
             ci::run(&candidate)
         }
+        Task::NoStd => no_std::run(&root),
         Task::PackageContent => {
             package_content::run(&root)?;
             Ok(())

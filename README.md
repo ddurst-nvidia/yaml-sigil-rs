@@ -167,6 +167,11 @@ standalone `xtask` helper keeps its own lockfile.
 
 The complete developer validation commands appear at the end of this README.
 
+The `no-std` task checks all published libraries and the standalone consumer
+probe for `thumbv7em-none-eabi`, runs the alloc-only host and conformance tests,
+and audits each normal target dependency graph for standard-library-only
+facilities.
+
 Run the focused E2E fixture check with:
 
 ```shell
@@ -246,6 +251,7 @@ other files Cargo would place in each source package.
 
 ```shell
 cargo xtask ci
+cargo xtask no-std
 cargo xtask package-content
 cargo package --list --allow-dirty --exclude-lockfile --package yaml-sigil-core
 cargo package --list --allow-dirty --exclude-lockfile --package yaml-sigil-transcription

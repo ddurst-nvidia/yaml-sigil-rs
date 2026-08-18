@@ -206,6 +206,7 @@ Run from the repository root:
 
 ```shell
 cargo xtask ci
+cargo xtask no-std
 cargo xtask package-content
 cargo xtask update-spec
 cargo xtask update-spec --ref origin/dev/example-branch
@@ -217,6 +218,25 @@ cargo xtask profile
 cargo xtask profile --iterations 250
 cargo xtask profile --open
 cargo xtask profile-open
+```
+
+`cargo xtask no-std` uses Rust `1.95.0` and runs these checks:
+
+```shell
+cargo +1.95.0 fmt --manifest-path no-std-probe/Cargo.toml --all --check
+cargo +1.95.0 check --package yaml-sigil-core --package yaml-sigil-transcription --package yaml-sigil-signing --package yaml-sigil-verification --lib --no-default-features --target thumbv7em-none-eabi
+cargo +1.95.0 check --manifest-path no-std-probe/Cargo.toml --target thumbv7em-none-eabi
+cargo +1.95.0 test --workspace --no-default-features
+cargo +1.95.0 tree --package yaml-sigil-core --edges normal --no-default-features --target thumbv7em-none-eabi --format '{p}|{f}'
+cargo +1.95.0 tree --package yaml-sigil-transcription --edges normal --no-default-features --target thumbv7em-none-eabi --format '{p}|{f}'
+cargo +1.95.0 tree --package yaml-sigil-signing --edges normal --no-default-features --target thumbv7em-none-eabi --format '{p}|{f}'
+cargo +1.95.0 tree --package yaml-sigil-verification --edges normal --no-default-features --target thumbv7em-none-eabi --format '{p}|{f}'
+```
+
+Install the compile-support target before running the command locally:
+
+```shell
+rustup target add --toolchain 1.95.0 thumbv7em-none-eabi
 ```
 
 `cargo xtask ci` runs the complete provider-neutral non-release validation

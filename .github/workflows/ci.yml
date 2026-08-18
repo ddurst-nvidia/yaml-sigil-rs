@@ -164,6 +164,28 @@ jobs:
       - name: Audit xtask dependencies
         run: cargo audit --file xtask/Cargo.lock
 
+  no_std:
+    name: no_std + alloc
+    runs-on: linux-amd64-cpu8
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust 1.95.0
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+          toolchain: "1.95.0"
+          target: thumbv7em-none-eabi
+
+      - name: Validate no_std + alloc
+        run: cargo xtask no-std
+
   required_ci:
     name: Required CI
     if: ${{ always() }}
@@ -171,6 +193,7 @@ jobs:
       - workflow_lint
       - static_checks
       - rust
+      - no_std
     permissions: {}
     runs-on: linux-amd64-cpu4
     timeout-minutes: 5
@@ -180,6 +203,7 @@ jobs:
           GITHUB_ACTIONS_RESULT: ${{ needs.workflow_lint.result }}
           STATIC_RESULT: ${{ needs.static_checks.result }}
           RUST_RESULT: ${{ needs.rust.result }}
+          NO_STD_RESULT: ${{ needs.no_std.result }}
         run: |
           require_success() {
             local job="$1"
@@ -195,3 +219,4 @@ jobs:
           require_success "GitHub Actions" "${GITHUB_ACTIONS_RESULT}"
           require_success "Documentation and Protobuf" "${STATIC_RESULT}"
           require_success "Rust matrix" "${RUST_RESULT}"
+          require_success "no_std + alloc" "${NO_STD_RESULT}"

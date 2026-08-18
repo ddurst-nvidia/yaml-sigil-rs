@@ -17,9 +17,7 @@
 use p256::ecdsa::{SigningKey as P256Sk, VerifyingKey as P256Vk};
 use rand_core::{CryptoRng, Error as RngError, RngCore};
 use yaml_sigil_core::AlgorithmId;
-use yaml_sigil_signing::{
-    OutputForm, SignInvocationError, SignOutcome, SignRequest, SigningKey,
-};
+use yaml_sigil_signing::{OutputForm, SignInvocationError, SignOutcome, SignRequest, SigningKey};
 use yaml_sigil_verification::{
     ArtifactForm, InvocationError, PublicKeys, VerifierOptions, VerifierState,
     resolve_p256_verifying_key,

@@ -1,4 +1,6 @@
 /target/
 /xtask/target/
+/no-std-probe/Cargo.lock
+/no-std-probe/target/
 /.rumdl_cache/
 /Cargo.lock
