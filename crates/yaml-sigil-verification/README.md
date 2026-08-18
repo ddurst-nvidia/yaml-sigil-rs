@@ -43,6 +43,14 @@ other form after structural or verification failure.
 Only payload bytes returned by `VerifierState::Verified` are authenticated. A
 signature document inside those bytes remains payload content.
 
+## Feature Configuration
+
+The default `std` feature enables tracing and propagates standard-library
+support through dependencies. Disable default features for `no_std + alloc`.
+The application supplies the allocator, panic behavior, and any executor used
+to poll async trait methods. The `json-schema-validate` feature implies `std`.
+Rust 1.95.0 compile support is checked for `thumbv7em-none-eabi`.
+
 ## YAML Signature-Document Behavior
 
 The verifier advertises `AdvertisedConformanceProfile::Permissive`. Its YAML

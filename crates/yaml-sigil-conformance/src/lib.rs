@@ -24,7 +24,7 @@ pub mod yaml_signature;
 
 use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
 use p256::ecdsa::{SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey};
-use yaml_sigil_signing::{AsyncSigner, Signer};
+use yaml_sigil_signing::{AsyncSigner, AsyncSignerWithRng, Signer, SignerWithRng};
 use yaml_sigil_verification::{AsyncVerifier, Verifier};
 
 /// Verifier binding exercised by this implementation's conformance harness.
@@ -75,5 +75,29 @@ pub trait ConformanceAsyncSigner:
 
 impl<T> ConformanceAsyncSigner for T where
     T: AsyncSigner<Ed25519SigningKey = Ed25519SigningKey, P256SigningKey = P256SigningKey>
+{
+}
+
+/// Signer-with-RNG binding exercised by this implementation's conformance harness.
+#[doc(hidden)]
+pub trait ConformanceSignerWithRng:
+    SignerWithRng<Ed25519SigningKey = Ed25519SigningKey, P256SigningKey = P256SigningKey>
+{
+}
+
+impl<T> ConformanceSignerWithRng for T where
+    T: SignerWithRng<Ed25519SigningKey = Ed25519SigningKey, P256SigningKey = P256SigningKey>
+{
+}
+
+/// Async signer-with-RNG binding exercised by this implementation's conformance harness.
+#[doc(hidden)]
+pub trait ConformanceAsyncSignerWithRng:
+    AsyncSignerWithRng<Ed25519SigningKey = Ed25519SigningKey, P256SigningKey = P256SigningKey>
+{
+}
+
+impl<T> ConformanceAsyncSignerWithRng for T where
+    T: AsyncSignerWithRng<Ed25519SigningKey = Ed25519SigningKey, P256SigningKey = P256SigningKey>
 {
 }

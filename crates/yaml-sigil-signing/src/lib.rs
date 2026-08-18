@@ -9,6 +9,8 @@
 //! encode is infallible here).
 //!
 //! Convenience wrappers [`sign_yaml`] and [`sign_proto`] call [`sign`] with a fixed [`OutputForm`].
+//! Their caller-RNG counterparts are [`sign_yaml_with_rng`] and
+//! [`sign_proto_with_rng`].
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -30,12 +32,14 @@ use yaml_sigil_traits::{
     YamlSignatureDocumentUnknownFieldPolicy,
 };
 
+pub use yaml_sigil_traits::CryptoRngCore;
+
 // The portable traits and DTOs live in `yaml-sigil-traits`. This implementation
 // binds the generic key-bearing DTOs to its RustCrypto key types while retaining
 // the established `yaml_sigil_signing::{SigningKey, SignRequest}` paths.
 pub use yaml_sigil_traits::signing::{
-    AsyncSigner, OutputForm, SignError, SignInvocationError, SignOutcome, SignSuccess, Signer,
-    SignerCapabilities,
+    AsyncSigner, AsyncSignerWithRng, OutputForm, SignError, SignInvocationError, SignOutcome,
+    SignSuccess, Signer, SignerCapabilities, SignerWithRng,
 };
 use yaml_sigil_traits::signing::{
     SignRequest as GenericSignRequest, SigningKey as GenericSigningKey,
@@ -48,7 +52,11 @@ pub type SigningKey<'a> = GenericSigningKey<'a, ed25519_dalek::SigningKey, p256:
 pub type SignRequest<'a> =
     GenericSignRequest<'a, ed25519_dalek::SigningKey, p256::ecdsa::SigningKey>;
 
-/// Return the capability set for this crate build.
+/// Return the capability set for ordinary signing in this crate build.
+///
+/// Standard-library builds advertise both algorithms. Alloc-only builds
+/// advertise Ed25519; use [`signer_capabilities_with_rng`] for the algorithms
+/// available with caller-supplied randomness.
 pub fn signer_capabilities() -> SignerCapabilities {
     #[cfg(feature = "std")]
     const SUPPORTED_ALGORITHMS: &[AlgorithmId] =
@@ -56,6 +64,15 @@ pub fn signer_capabilities() -> SignerCapabilities {
     #[cfg(not(feature = "std"))]
     const SUPPORTED_ALGORITHMS: &[AlgorithmId] = &[AlgorithmId::Ed25519];
 
+    signer_capabilities_for(SUPPORTED_ALGORITHMS)
+}
+
+/// Return the capability set available with caller-supplied randomness.
+pub fn signer_capabilities_with_rng() -> SignerCapabilities {
+    signer_capabilities_for(&[AlgorithmId::Ed25519, AlgorithmId::EcdsaP256Sha256])
+}
+
+fn signer_capabilities_for(supported_algorithms: &'static [AlgorithmId]) -> SignerCapabilities {
     SignerCapabilities {
         protobuf_wire_decode: ProtobufWireDecodeAdvertisement::UnprofiledStockDecoder,
         yaml_signature_duplicate_key_policy:
@@ -63,7 +80,7 @@ pub fn signer_capabilities() -> SignerCapabilities {
         yaml_signature_unknown_field_policy:
             YamlSignatureDocumentUnknownFieldPolicy::RejectedAtParse,
         supported_output_forms: &[OutputForm::Yaml, OutputForm::Protobuf],
-        supported_algorithms: SUPPORTED_ALGORITHMS,
+        supported_algorithms,
         best_effort_yaml_validation: false,
         implementation_name: env!("CARGO_PKG_NAME"),
         implementation_version: env!("CARGO_PKG_VERSION"),
@@ -90,8 +107,10 @@ pub struct SignProtoParams<'a> {
     pub append_missing_final_newline: bool,
 }
 
-fn validate_invocation(req: &SignRequest<'_>) -> Result<(), SignInvocationError> {
-    let caps = signer_capabilities();
+fn validate_invocation(
+    req: &SignRequest<'_>,
+    caps: &SignerCapabilities,
+) -> Result<(), SignInvocationError> {
     if !caps.supported_output_forms.contains(&req.output_form) {
         return Err(SignInvocationError::InvalidOrUnsupportedOutputForm);
     }
@@ -142,16 +161,45 @@ fn normalize_yaml_payload(
 ///
 /// For protobuf output, `append_missing_final_newline` is
 /// ignored and the payload bytes are signed and emitted without modification.
+///
+/// Standard-library builds obtain operating-system entropy for ECDSA.
+/// Alloc-only builds accept Ed25519 through this entry point; use
+/// [`sign_with_rng`] for ECDSA.
 #[cfg_attr(
     feature = "std",
     tracing::instrument(level = "info", skip(req), fields(alg = ?req.algorithm, form = ?req.output_form))
 )]
 pub fn sign(req: &SignRequest<'_>) -> SignOutcome {
-    sign_inner(req)
+    #[cfg(feature = "std")]
+    {
+        let mut rng = rand_core::OsRng;
+        sign_inner(req, &signer_capabilities(), Some(&mut rng))
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        sign_inner(req, &signer_capabilities(), None)
+    }
 }
 
-fn sign_inner(req: &SignRequest<'_>) -> SignOutcome {
-    if let Err(e) = validate_invocation(req) {
+/// Unified signing entry point with caller-supplied cryptographic randomness.
+///
+/// ECDSA obtains 32 bytes with [`CryptoRngCore::try_fill_bytes`] and maps an
+/// entropy failure to [`SignError::KeyOperationFailure`]. Ed25519 does not
+/// consume `rng`.
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(req, rng), fields(alg = ?req.algorithm, form = ?req.output_form))
+)]
+pub fn sign_with_rng(req: &SignRequest<'_>, rng: &mut dyn CryptoRngCore) -> SignOutcome {
+    sign_inner(req, &signer_capabilities_with_rng(), Some(rng))
+}
+
+fn sign_inner(
+    req: &SignRequest<'_>,
+    capabilities: &SignerCapabilities,
+    rng: Option<&mut dyn CryptoRngCore>,
+) -> SignOutcome {
+    if let Err(e) = validate_invocation(req, capabilities) {
         return SignOutcome::Invocation(e);
     }
 
@@ -179,7 +227,7 @@ fn sign_inner(req: &SignRequest<'_>) -> SignOutcome {
         payload.clone()
     };
 
-    let sig_bytes = match sign_digest(&payload, req.algorithm, &req.key) {
+    let sig_bytes = match sign_digest(&payload, req.algorithm, &req.key, rng) {
         Ok(b) => b,
         Err(e) => return SignOutcome::Signer(e),
     };
@@ -263,7 +311,32 @@ pub fn sign_yaml(params: &SignYamlParams<'_>) -> Result<Vec<u8>, SignError> {
         output_form: OutputForm::Yaml,
         algorithm_parameters: &[],
     };
-    match sign_inner(&req) {
+    match sign(&req) {
+        SignOutcome::Success(s) => Ok(s.artifact),
+        SignOutcome::Invocation(e) => Err(map_invocation_to_sign_error(e)),
+        SignOutcome::Signer(e) => Err(e),
+    }
+}
+
+/// Convenience: sign with YAML output and caller-supplied randomness.
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(params, rng), fields(alg = ?params.algorithm))
+)]
+pub fn sign_yaml_with_rng(
+    params: &SignYamlParams<'_>,
+    rng: &mut dyn CryptoRngCore,
+) -> Result<Vec<u8>, SignError> {
+    let req = SignRequest {
+        payload: params.payload,
+        algorithm: params.algorithm,
+        key: params.key,
+        keyid: params.keyid,
+        append_missing_final_newline: params.append_missing_final_newline,
+        output_form: OutputForm::Yaml,
+        algorithm_parameters: &[],
+    };
+    match sign_with_rng(&req, rng) {
         SignOutcome::Success(s) => Ok(s.artifact),
         SignOutcome::Invocation(e) => Err(map_invocation_to_sign_error(e)),
         SignOutcome::Signer(e) => Err(e),
@@ -292,6 +365,31 @@ pub fn sign_proto(params: &SignProtoParams<'_>) -> Result<Vec<u8>, SignError> {
     }
 }
 
+/// Convenience: sign with protobuf output and caller-supplied randomness.
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(params, rng), fields(alg = ?params.algorithm))
+)]
+pub fn sign_proto_with_rng(
+    params: &SignProtoParams<'_>,
+    rng: &mut dyn CryptoRngCore,
+) -> Result<Vec<u8>, SignError> {
+    let req = SignRequest {
+        payload: params.payload,
+        algorithm: params.algorithm,
+        key: params.key,
+        keyid: params.keyid,
+        append_missing_final_newline: params.append_missing_final_newline,
+        output_form: OutputForm::Protobuf,
+        algorithm_parameters: &[],
+    };
+    match sign_with_rng(&req, rng) {
+        SignOutcome::Success(s) => Ok(s.artifact),
+        SignOutcome::Invocation(e) => Err(map_invocation_to_sign_error(e)),
+        SignOutcome::Signer(e) => Err(e),
+    }
+}
+
 fn map_invocation_to_sign_error(e: SignInvocationError) -> SignError {
     match e {
         SignInvocationError::InvalidOrUnsupportedAlgorithm => {
@@ -309,6 +407,7 @@ fn sign_digest(
     payload: &[u8],
     algorithm: AlgorithmId,
     key: &SigningKey<'_>,
+    rng: Option<&mut dyn CryptoRngCore>,
 ) -> Result<Vec<u8>, SignError> {
     match (algorithm, key) {
         (AlgorithmId::Ed25519, SigningKey::Ed25519(sk)) => {
@@ -316,9 +415,16 @@ fn sign_digest(
             Ok(sk.sign(payload).to_bytes().to_vec())
         }
         (AlgorithmId::EcdsaP256Sha256, SigningKey::EcdsaP256Sha256(sk)) => {
-            use p256::ecdsa::signature::Signer;
+            use p256::ecdsa::signature::RandomizedSigner;
+            use rand_core::SeedableRng;
+
+            let rng = rng.ok_or(SignError::KeyOperationFailure)?;
+            let mut seed = [0u8; 32];
+            rng.try_fill_bytes(&mut seed)
+                .map_err(|_| SignError::KeyOperationFailure)?;
+            let mut nonce_rng = rand_chacha::ChaCha20Rng::from_seed(seed);
             let sig: p256::ecdsa::Signature = sk
-                .try_sign(payload)
+                .try_sign_with_rng(&mut nonce_rng, payload)
                 .map_err(|_| SignError::KeyOperationFailure)?;
             // Raw R || S 64 octets.
             Ok(sig.to_bytes().to_vec())
@@ -343,10 +449,20 @@ impl Signer for DefaultSigner {
     }
 }
 
+impl SignerWithRng for DefaultSigner {
+    fn capabilities_with_rng(&self) -> SignerCapabilities {
+        signer_capabilities_with_rng()
+    }
+
+    fn sign_with_rng(&self, req: &SignRequest<'_>, rng: &mut dyn CryptoRngCore) -> SignOutcome {
+        sign_with_rng(req, rng)
+    }
+}
+
 /// In-process default async signer that delegates to the crate's free functions.
 ///
-/// The body is `async { sign(req) }` — no `tokio::spawn_blocking`. The signing
-/// path is CPU-bound, deterministic, and short; offloading to a blocking pool
+/// The body delegates directly — no `tokio::spawn_blocking`. The signing path
+/// is CPU-bound and short; offloading to a blocking pool
 /// would add latency without protecting any meaningful reactor.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultAsyncSigner;
@@ -363,10 +479,132 @@ impl AsyncSigner for DefaultAsyncSigner {
     }
 }
 
+impl AsyncSignerWithRng for DefaultAsyncSigner {
+    fn capabilities_with_rng(&self) -> SignerCapabilities {
+        signer_capabilities_with_rng()
+    }
+
+    async fn sign_with_rng(
+        &self,
+        req: &SignRequest<'_>,
+        rng: &mut (dyn CryptoRngCore + Send),
+    ) -> SignOutcome {
+        sign_with_rng(req, rng)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU32;
+
     use super::*;
     use ed25519_dalek::SigningKey as EdSk;
+    use p256::ecdsa::{SigningKey as P256Sk, VerifyingKey as P256Vk};
+    use rand_core::{CryptoRng, Error as RngError, RngCore};
+    use yaml_sigil_verification::{
+        ArtifactForm, PublicKeys, VerifierOptions, VerifierState, verify,
+    };
+
+    struct PatternRng {
+        byte: u8,
+        calls: usize,
+    }
+
+    impl PatternRng {
+        fn new(byte: u8) -> Self {
+            Self { byte, calls: 0 }
+        }
+    }
+
+    impl RngCore for PatternRng {
+        fn next_u32(&mut self) -> u32 {
+            let mut bytes = [0u8; 4];
+            self.fill_bytes(&mut bytes);
+            u32::from_le_bytes(bytes)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut bytes = [0u8; 8];
+            self.fill_bytes(&mut bytes);
+            u64::from_le_bytes(bytes)
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            self.calls += 1;
+            dest.fill(self.byte);
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    impl CryptoRng for PatternRng {}
+
+    struct FailingRng;
+
+    impl RngCore for FailingRng {
+        fn next_u32(&mut self) -> u32 {
+            panic!("signing must use fallible RNG access")
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            panic!("signing must use fallible RNG access")
+        }
+
+        fn fill_bytes(&mut self, _dest: &mut [u8]) {
+            panic!("signing must use fallible RNG access")
+        }
+
+        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), RngError> {
+            Err(RngError::from(NonZeroU32::new(1).expect("nonzero")))
+        }
+    }
+
+    impl CryptoRng for FailingRng {}
+
+    struct PanicRng;
+
+    impl RngCore for PanicRng {
+        fn next_u32(&mut self) -> u32 {
+            panic!("Ed25519 must not consume caller randomness")
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            panic!("Ed25519 must not consume caller randomness")
+        }
+
+        fn fill_bytes(&mut self, _dest: &mut [u8]) {
+            panic!("Ed25519 must not consume caller randomness")
+        }
+
+        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), RngError> {
+            panic!("Ed25519 must not consume caller randomness")
+        }
+    }
+
+    impl CryptoRng for PanicRng {}
+
+    fn p256_request<'a>(key: &'a P256Sk) -> SignRequest<'a> {
+        SignRequest {
+            payload: b"a: b\n",
+            algorithm: AlgorithmId::EcdsaP256Sha256,
+            key: SigningKey::EcdsaP256Sha256(key),
+            keyid: Some("p256-test"),
+            append_missing_final_newline: false,
+            output_form: OutputForm::Protobuf,
+            algorithm_parameters: &[],
+        }
+    }
+
+    fn success_artifact(outcome: SignOutcome) -> Vec<u8> {
+        match outcome {
+            SignOutcome::Success(success) => success.artifact,
+            other => panic!("expected signing success, got {other:?}"),
+        }
+    }
+
     #[test]
     fn signer_capabilities_match_entropy_availability() {
         let c = signer_capabilities();
@@ -390,6 +628,111 @@ mod tests {
         assert_eq!(
             c.yaml_signature_unknown_field_policy,
             yaml_sigil_core::YamlSignatureDocumentUnknownFieldPolicy::RejectedAtParse
+        );
+
+        assert_eq!(
+            signer_capabilities_with_rng().supported_algorithms,
+            &[AlgorithmId::Ed25519, AlgorithmId::EcdsaP256Sha256]
+        );
+    }
+
+    #[test]
+    fn caller_rng_ecdsa_signatures_verify_and_vary() {
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        let req = p256_request(&sk);
+        let mut first_rng = PatternRng::new(0x11);
+        let mut second_rng = PatternRng::new(0x22);
+
+        let first = success_artifact(sign_with_rng(&req, &mut first_rng));
+        let second = success_artifact(sign_with_rng(&req, &mut second_rng));
+        assert_eq!(first_rng.calls, 1);
+        assert_eq!(second_rng.calls, 1);
+        assert_ne!(
+            first, second,
+            "distinct caller entropy must vary ECDSA output"
+        );
+
+        let vk = P256Vk::from(&sk);
+        let keys = PublicKeys {
+            ed25519: None,
+            p256: Some(&vk),
+        };
+        for artifact in [&first, &second] {
+            let state = verify(
+                artifact,
+                ArtifactForm::Proto,
+                &keys,
+                VerifierOptions::default(),
+            )
+            .expect("generated artifact verifies without invocation failure");
+            assert!(matches!(state, VerifierState::Verified { .. }));
+        }
+    }
+
+    #[test]
+    fn caller_rng_failure_maps_to_key_operation_failure() {
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        let mut rng = FailingRng;
+        assert!(matches!(
+            sign_with_rng(&p256_request(&sk), &mut rng),
+            SignOutcome::Signer(SignError::KeyOperationFailure)
+        ));
+    }
+
+    #[test]
+    fn ed25519_does_not_consume_caller_rng() {
+        let sk = EdSk::from_bytes(&[5u8; 32]);
+        let req = SignRequest {
+            payload: b"a: b\n",
+            algorithm: AlgorithmId::Ed25519,
+            key: SigningKey::Ed25519(&sk),
+            keyid: None,
+            append_missing_final_newline: false,
+            output_form: OutputForm::Protobuf,
+            algorithm_parameters: &[],
+        };
+        let mut rng = PanicRng;
+        assert!(matches!(
+            sign_with_rng(&req, &mut rng),
+            SignOutcome::Success(_)
+        ));
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[test]
+    fn ordinary_alloc_only_signing_rejects_ecdsa() {
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        assert!(matches!(
+            sign(&p256_request(&sk)),
+            SignOutcome::Invocation(SignInvocationError::InvalidOrUnsupportedAlgorithm)
+        ));
+    }
+
+    #[test]
+    fn caller_rng_signer_trait_is_object_safe() {
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        let signer: &dyn SignerWithRng<
+            Ed25519SigningKey = ed25519_dalek::SigningKey,
+            P256SigningKey = p256::ecdsa::SigningKey,
+        > = &DefaultSigner;
+        let mut rng = PatternRng::new(0x33);
+        assert_eq!(signer.capabilities_with_rng().supported_algorithms.len(), 2);
+        assert!(matches!(
+            signer.sign_with_rng(&p256_request(&sk), &mut rng),
+            SignOutcome::Success(_)
+        ));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn ordinary_ecdsa_signing_uses_os_entropy() {
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        let req = p256_request(&sk);
+        let first = success_artifact(sign(&req));
+        let second = success_artifact(sign(&req));
+        assert_ne!(
+            first, second,
+            "ordinary ECDSA signatures must be randomized"
         );
     }
 
@@ -530,5 +873,22 @@ mod tests {
                 .len(),
             signer_capabilities().supported_algorithms.len()
         );
+    }
+
+    #[tokio::test]
+    async fn async_caller_rng_future_is_send() {
+        fn require_send<F: core::future::Future + Send>(future: F) -> F {
+            future
+        }
+
+        let sk = P256Sk::from_slice(&[7u8; 32]).expect("valid test key");
+        let req = p256_request(&sk);
+        let mut rng = PatternRng::new(0x44);
+        let future = AsyncSignerWithRng::sign_with_rng(&DefaultAsyncSigner, &req, &mut rng);
+        assert!(matches!(
+            require_send(future).await,
+            SignOutcome::Success(_)
+        ));
+        assert_eq!(rng.calls, 1);
     }
 }

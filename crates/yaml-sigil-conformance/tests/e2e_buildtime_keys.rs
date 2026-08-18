@@ -3,10 +3,11 @@
 
 //! End-to-end signing → verification using compile-time keys from `yaml-sigil-test-keys`.
 
+use rand_core::{CryptoRng, Error as RngError, RngCore};
 use yaml_sigil_core::AlgorithmId;
 use yaml_sigil_signing::{
     SignProtoParams, SignYamlParams, SigningKey, proto_wire_to_signed_yaml_stream, sign_proto,
-    sign_yaml, signed_yaml_stream_to_proto_wire,
+    sign_proto_with_rng, sign_yaml, sign_yaml_with_rng, signed_yaml_stream_to_proto_wire,
 };
 use yaml_sigil_test_keys::{
     ed25519_signing_key, ed25519_verifying_key, p256_signing_key, p256_verifying_key,
@@ -18,6 +19,37 @@ use yaml_sigil_verification::{
 
 const PAYLOAD_ED: &[u8] = b"e2e-buildtime-keys: ed25519 payload\n";
 const PAYLOAD_P256: &[u8] = b"e2e-buildtime-keys: p256 payload\n";
+
+struct TestRng;
+
+impl RngCore for TestRng {
+    fn next_u32(&mut self) -> u32 {
+        0x5a5a_5a5a
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        0x5a5a_5a5a_5a5a_5a5a
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        dest.fill(0x5a);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl CryptoRng for TestRng {}
+
+fn sign_p256_yaml(params: &SignYamlParams<'_>) -> Vec<u8> {
+    sign_yaml_with_rng(params, &mut TestRng).expect("P-256 YAML signing succeeds")
+}
+
+fn sign_p256_proto(params: &SignProtoParams<'_>) -> Vec<u8> {
+    sign_proto_with_rng(params, &mut TestRng).expect("P-256 protobuf signing succeeds")
+}
 
 fn keys_ed25519(vk_idx: u8) -> PublicKeys<'static> {
     let vk = Box::leak(Box::new(ed25519_verifying_key(vk_idx)));
@@ -98,14 +130,13 @@ fn e2e_ed25519_yaml_and_proto_pass_and_fail_wrong_peer_key() {
 #[test]
 fn e2e_p256_yaml_and_proto_pass_and_fail_wrong_peer_key() {
     let sk0 = p256_signing_key(0);
-    let artifact = sign_yaml(&SignYamlParams {
+    let artifact = sign_p256_yaml(&SignYamlParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk0),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
 
     assert!(matches!(
         verify_yaml(&artifact, &keys_p256(0), VerifierOptions::default()).unwrap(),
@@ -116,14 +147,13 @@ fn e2e_p256_yaml_and_proto_pass_and_fail_wrong_peer_key() {
         VerifierState::SignedButFailedVerification
     );
 
-    let wire = sign_proto(&SignProtoParams {
+    let wire = sign_p256_proto(&SignProtoParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk0),
         keyid: Some("p256-e2e"),
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
 
     assert!(matches!(
         verify_proto(&wire, &keys_p256(0), VerifierOptions::default()).unwrap(),
@@ -175,14 +205,13 @@ fn e2e_key_resolution_failure_wrong_key_slot() {
 #[test]
 fn e2e_signed_but_algorithm_unsupported_options() {
     let sk = p256_signing_key(0);
-    let artifact = sign_yaml(&SignYamlParams {
+    let artifact = sign_p256_yaml(&SignYamlParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
 
     let opts = VerifierOptions {
         verify_ed25519: true,
@@ -196,14 +225,13 @@ fn e2e_signed_but_algorithm_unsupported_options() {
         }
     );
 
-    let wire = sign_proto(&SignProtoParams {
+    let wire = sign_p256_proto(&SignProtoParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     assert_eq!(
         verify_proto(&wire, &keys_p256(0), opts).unwrap(),
         VerifierState::SignedButAlgorithmUnsupported {
@@ -346,14 +374,13 @@ fn e2e_spec_roundtrip_proto_yaml_proto_ed25519() {
 fn e2e_spec_roundtrip_yaml_proto_yaml_p256() {
     let sk = p256_signing_key(0);
     let keys = keys_p256(0);
-    let yaml0 = sign_yaml(&SignYamlParams {
+    let yaml0 = sign_p256_yaml(&SignYamlParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     assert_verified_yaml(&keys, &yaml0);
 
     let wire = signed_yaml_stream_to_proto_wire(&yaml0).unwrap();
@@ -367,14 +394,13 @@ fn e2e_spec_roundtrip_yaml_proto_yaml_p256() {
 fn e2e_spec_roundtrip_proto_yaml_proto_p256() {
     let sk = p256_signing_key(0);
     let keys = keys_p256(0);
-    let wire0 = sign_proto(&SignProtoParams {
+    let wire0 = sign_p256_proto(&SignProtoParams {
         payload: PAYLOAD_P256,
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     assert_verified_proto(&keys, &wire0);
 
     let yaml = proto_wire_to_signed_yaml_stream(&wire0).unwrap();

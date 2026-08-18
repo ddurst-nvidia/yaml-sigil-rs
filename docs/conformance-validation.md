@@ -97,6 +97,16 @@ an unnatural workaround.
   enabled. YAML output retains its existing authorized newline-appending
   behavior. Specification inputs, schemas, fixture bytes, public API shapes,
   dependencies, and notices are unchanged.
+- 2026-08-18: ECDSA signing now obtains fresh randomness instead of using the
+  deterministic signing path. Ordinary signing uses operating-system entropy
+  when `std` is enabled, while caller-RNG companion APIs support ECDSA in both
+  standard-library and alloc-only builds. The ECDSA conformance suite uses the
+  caller-RNG trait for its invalid-parameter check, and alloc-only end-to-end
+  cases inject deterministic test entropy. Tests cover entropy consumption,
+  failure mapping, signature verification, entropy-dependent variation,
+  Ed25519 non-consumption, conditional capabilities, sync trait objects, and
+  async `Send` futures. Fixtures, expected outcomes, wire formats, algorithm
+  identifiers, schemas, and the specification are unchanged.
 - 2026-08-13: Marked `crates/yaml-sigil-conformance/fixtures/**` as `-text` in
   `.gitattributes` so checkout preserves every fixture byte on Linux, macOS,
   and Windows, including intentional CRLF and binary artifacts. No fixture

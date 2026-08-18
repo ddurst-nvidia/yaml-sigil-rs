@@ -15,8 +15,11 @@
 //! and patent/IP caveats.
 
 use p256::ecdsa::{SigningKey as P256Sk, VerifyingKey as P256Vk};
+use rand_core::{CryptoRng, Error as RngError, RngCore};
 use yaml_sigil_core::AlgorithmId;
-use yaml_sigil_signing::{OutputForm, SignInvocationError, SignOutcome, SignRequest, SigningKey};
+use yaml_sigil_signing::{
+    OutputForm, SignInvocationError, SignOutcome, SignRequest, SigningKey,
+};
 use yaml_sigil_verification::{
     ArtifactForm, InvocationError, PublicKeys, VerifierOptions, VerifierState,
     resolve_p256_verifying_key,
@@ -24,10 +27,33 @@ use yaml_sigil_verification::{
 
 use crate::fixtures::{load_bytes, load_string, require_hex_field};
 use crate::{
-    ConformanceAsyncSigner, ConformanceAsyncVerifier, ConformanceSigner, ConformanceVerifier,
+    ConformanceAsyncSignerWithRng, ConformanceAsyncVerifier, ConformanceSignerWithRng,
+    ConformanceVerifier,
 };
 
 const CATEGORY: &str = "alg-ecdsa";
+
+struct UnusedRng;
+
+impl RngCore for UnusedRng {
+    fn next_u32(&mut self) -> u32 {
+        panic!("invalid-parameter requests must not consume randomness")
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        panic!("invalid-parameter requests must not consume randomness")
+    }
+
+    fn fill_bytes(&mut self, _dest: &mut [u8]) {
+        panic!("invalid-parameter requests must not consume randomness")
+    }
+
+    fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), RngError> {
+        panic!("invalid-parameter requests must not consume randomness")
+    }
+}
+
+impl CryptoRng for UnusedRng {}
 
 fn parse_p256_pubkey(expected_txt: &str) -> P256Vk {
     // Try the prose form first (verify-happy-path.expected.txt and
@@ -52,7 +78,7 @@ fn keys_with_p256<'a>(vk: &'a P256Vk) -> PublicKeys<'a> {
 
 /// Drive the ECDSA P-256 fixture matrix through implementation-bound verifier
 /// and signer adapters.
-pub fn run_ecdsa_suite<V: ConformanceVerifier, S: ConformanceSigner>(v: &V, s: &S) {
+pub fn run_ecdsa_suite<V: ConformanceVerifier, S: ConformanceSignerWithRng>(v: &V, s: &S) {
     happy_path_and_acvp(v);
     high_low_s(v);
     invalid_component_ranges(v);
@@ -322,7 +348,10 @@ fn two_nonce_instability<V: ConformanceVerifier>(v: &V) {
     );
 }
 
-fn algorithm_parameters_rejection<V: ConformanceVerifier, S: ConformanceSigner>(v: &V, s: &S) {
+fn algorithm_parameters_rejection<V: ConformanceVerifier, S: ConformanceSignerWithRng>(
+    v: &V,
+    s: &S,
+) {
     // fixture: algorithm-parameters-present.expected.txt -> InvalidAlgorithmParameters on both
     let expected = load_string(CATEGORY, "verify-happy-path.expected.txt");
     let vk = parse_p256_pubkey(&expected);
@@ -356,14 +385,18 @@ fn algorithm_parameters_rejection<V: ConformanceVerifier, S: ConformanceSigner>(
         output_form: OutputForm::Protobuf,
         algorithm_parameters: &bad,
     };
-    match s.sign(&req) {
+    let mut rng = UnusedRng;
+    match s.sign_with_rng(&req, &mut rng) {
         SignOutcome::Invocation(SignInvocationError::InvalidAlgorithmParameters) => {}
         other => panic!("Sign: expected InvalidAlgorithmParameters, got {other:?}"),
     }
 }
 
 /// Async sibling of [`run_ecdsa_suite`].
-pub async fn run_ecdsa_suite_async<V: ConformanceAsyncVerifier, S: ConformanceAsyncSigner>(
+pub async fn run_ecdsa_suite_async<
+    V: ConformanceAsyncVerifier,
+    S: ConformanceAsyncSignerWithRng,
+>(
     v: &V,
     s: &S,
 ) {
@@ -570,7 +603,7 @@ async fn two_nonce_instability_async<V: ConformanceAsyncVerifier>(v: &V) {
 
 async fn algorithm_parameters_rejection_async<
     V: ConformanceAsyncVerifier,
-    S: ConformanceAsyncSigner,
+    S: ConformanceAsyncSignerWithRng,
 >(
     v: &V,
     s: &S,
@@ -604,7 +637,8 @@ async fn algorithm_parameters_rejection_async<
         output_form: OutputForm::Protobuf,
         algorithm_parameters: &bad,
     };
-    match s.sign(&req).await {
+    let mut rng = UnusedRng;
+    match s.sign_with_rng(&req, &mut rng).await {
         SignOutcome::Invocation(SignInvocationError::InvalidAlgorithmParameters) => {}
         other => panic!("Sign (async): expected InvalidAlgorithmParameters, got {other:?}"),
     }

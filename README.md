@@ -129,6 +129,29 @@ file extension.
 YAML decompose and verify operations require complete artifacts because
 boundary selection uses the last constrained marker.
 
+## Feature configuration
+
+The four published crates enable their `std` feature by default. Disable
+default features to build the library stack for a `no_std` environment with
+an allocator:
+
+```toml
+yaml-sigil-signing = { version = "0.5.0-rc.1", default-features = false }
+```
+
+This configuration is `no_std + alloc`, not heapless support. The application
+provides its allocator, panic behavior, executor for async trait methods, and
+cryptographic RNG when it requests randomized signing. The
+`json-schema-validate` feature implies `std`; tracing is also available only
+with `std`.
+
+Ordinary signing uses operating-system entropy for ECDSA P-256 when `std` is
+enabled. Without `std`, ordinary signing advertises Ed25519 only. The
+caller-RNG APIs and companion signer traits support both algorithms in either
+configuration. Rust 1.95.0 builds of every published library are checked for
+`thumbv7em-none-eabi`; that target is a compile-support target rather than a
+runtime guarantee for a particular device.
+
 ## Build
 
 The development toolchain follows Rust `stable` through

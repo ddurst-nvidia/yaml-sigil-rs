@@ -12,8 +12,8 @@ use yaml_sigil_core::{
     decode_signed_yaml_artifact, decompose_artifact, view_signed_yaml_artifact,
 };
 use yaml_sigil_signing::{
-    SignProtoParams, SignYamlParams, SigningKey, TranscodeError, sign_proto, sign_yaml,
-    signed_yaml_stream_to_proto_wire,
+    SignProtoParams, SignYamlParams, SigningKey, TranscodeError, sign_proto, sign_proto_with_rng,
+    sign_yaml, sign_yaml_with_rng, signed_yaml_stream_to_proto_wire,
 };
 use yaml_sigil_verification::{
     AdvertisedConformanceProfile, ArtifactForm, AsyncVerifier, DefaultAsyncVerifier,
@@ -35,6 +35,14 @@ fn p256_pair() -> (P256SigningKey, p256::ecdsa::VerifyingKey) {
     let sk = P256SigningKey::random(&mut OsRng);
     let vk = *sk.verifying_key();
     (sk, vk)
+}
+
+fn sign_p256_yaml(params: &SignYamlParams<'_>) -> Vec<u8> {
+    sign_yaml_with_rng(params, &mut OsRng).expect("P-256 YAML signing succeeds")
+}
+
+fn sign_p256_proto(params: &SignProtoParams<'_>) -> Vec<u8> {
+    sign_proto_with_rng(params, &mut OsRng).expect("P-256 protobuf signing succeeds")
 }
 
 fn append_varint(out: &mut Vec<u8>, mut value: u64) {
@@ -151,14 +159,13 @@ fn verify_yaml_ed25519_sign_then_verify_and_display() {
 #[test]
 fn verify_yaml_ecdsa_sign_then_verify() {
     let (sk, vk) = p256_pair();
-    let artifact = sign_yaml(&SignYamlParams {
+    let artifact = sign_p256_yaml(&SignYamlParams {
         payload: b"x: y\n",
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     let keys = PublicKeys {
         ed25519: None,
         p256: Some(&vk),
@@ -196,14 +203,13 @@ fn verify_proto_ed25519_and_ecdsa() {
     assert!(matches!(st, VerifierState::Verified { .. }));
 
     let (sk_p, vk_p) = p256_pair();
-    let wire_p = sign_proto(&SignProtoParams {
+    let wire_p = sign_p256_proto(&SignProtoParams {
         payload: b"z: 9\n",
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk_p),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     let st = verify_proto(
         &wire_p,
         &PublicKeys {
@@ -581,14 +587,13 @@ fn verify_ed25519_algorithm_disabled() {
 #[test]
 fn verify_ecdsa_algorithm_disabled() {
     let (sk, vk) = p256_pair();
-    let artifact = sign_yaml(&SignYamlParams {
+    let artifact = sign_p256_yaml(&SignYamlParams {
         payload: b"p: q\n",
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     let opts = VerifierOptions {
         verify_ed25519: true,
         verify_ecdsa_p256_sha256: false,
@@ -798,14 +803,13 @@ fn verify_from_pre_verify_yaml_happy_path() {
 #[test]
 fn verify_proto_ecdsa_missing_p256_key_errors() {
     let (sk, _) = p256_pair();
-    let wire = sign_proto(&SignProtoParams {
+    let wire = sign_p256_proto(&SignProtoParams {
         payload: b"p: q\n",
         algorithm: AlgorithmId::EcdsaP256Sha256,
         key: SigningKey::EcdsaP256Sha256(&sk),
         keyid: None,
         append_missing_final_newline: false,
-    })
-    .unwrap();
+    });
     let (sk_ed, vk_ed) = ed25519_pair();
     let _ = sk_ed;
     let err = verify_proto(

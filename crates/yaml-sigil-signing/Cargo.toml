@@ -37,6 +37,8 @@ base64 = { workspace = true }
 buffa = { workspace = true, default-features = false }
 ed25519-dalek = { workspace = true }
 p256 = { workspace = true }
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
 thiserror = { version = "2", default-features = false }
 tracing = { workspace = true, optional = true }
 yaml-sigil-core = { workspace = true, default-features = false }
@@ -45,6 +47,7 @@ yaml-sigil-transcription = { workspace = true, default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+yaml-sigil-verification = { workspace = true }
 
 [features]
 default = ["std"]
@@ -54,6 +57,7 @@ std = [
     "dep:tracing",
     "ed25519-dalek/std",
     "p256/std",
+    "rand_core/getrandom",
     "thiserror/std",
     "yaml-sigil-core/std",
     "yaml-sigil-traits/std",

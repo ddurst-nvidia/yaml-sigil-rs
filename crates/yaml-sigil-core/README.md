@@ -32,6 +32,15 @@ Code generation obtains a pinned, verified Buf executable from the
 descriptor set to [`buffa-build`](https://crates.io/crates/buffa-build).
 Neither a system `buf` nor a system `protoc` installation is required.
 
+## Feature Configuration
+
+The default `std` feature enables tracing and propagates standard-library
+support through dependencies. Disable default features for `no_std + alloc`.
+The application supplies the allocator and panic behavior. The optional
+`json-schema-validate` feature implies `std`; schema validation is unavailable
+in the alloc-only configuration. Rust 1.95.0 compile support is checked for
+`thumbv7em-none-eabi`.
+
 ## The Signature Document
 
 The YAML form uses the fixed `YamlSigilSignature.v1alpha1` schema discriminator.

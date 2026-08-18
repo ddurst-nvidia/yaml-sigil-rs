@@ -27,3 +27,11 @@ payload bytes as opaque and preserves every accepted byte unchanged.
 
 This crate does not provide RPC transport. Consumers that need a service
 boundary should wire the trait API into their own deployment.
+
+## Feature Configuration
+
+The default `std` feature enables tracing and propagates standard-library
+support through dependencies. Disable default features for `no_std + alloc`.
+The application supplies the allocator, panic behavior, and any executor used
+to poll async trait methods. Rust 1.95.0 compile support is checked for
+`thumbv7em-none-eabi`.
