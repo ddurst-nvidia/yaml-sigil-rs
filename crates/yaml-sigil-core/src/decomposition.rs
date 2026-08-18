@@ -3,7 +3,7 @@
 
 //! Artifact decomposition for the signed YAML stream envelope.
 
-use std::ops::Range;
+use core::ops::Range;
 
 /// Successful split of an artifact into payload and signature-document byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub enum DecompositionOutcome {
 }
 
 fn utf8_ok(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes).is_ok()
+    core::str::from_utf8(bytes).is_ok()
 }
 
 fn bom_at_zero(bytes: &[u8]) -> bool {
@@ -88,7 +88,10 @@ fn find_last_marker(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Run Artifact Decomposition on UTF-8 artifact bytes (no prior YAML parse).
-#[tracing::instrument(level = "debug", skip(artifact), fields(len = artifact.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "debug", skip(artifact), fields(len = artifact.len()))
+)]
 pub fn decompose_artifact(artifact: &[u8]) -> DecompositionOutcome {
     if !utf8_ok(artifact) || bom_at_zero(artifact) {
         return DecompositionOutcome::Malformed;
@@ -120,6 +123,8 @@ pub fn decompose_artifact(artifact: &[u8]) -> DecompositionOutcome {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]

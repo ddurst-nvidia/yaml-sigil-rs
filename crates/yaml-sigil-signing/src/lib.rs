@@ -10,6 +10,12 @@
 //!
 //! Convenience wrappers [`sign_yaml`] and [`sign_proto`] call [`sign`] with a fixed [`OutputForm`].
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 mod proto_carrier;
 pub mod transcription;
 
@@ -17,7 +23,7 @@ pub use transcription::{
     TranscodeError, proto_wire_to_signed_yaml_stream, signed_yaml_stream_to_proto_wire,
 };
 
-use tracing::instrument;
+use alloc::{string::ToString, vec::Vec};
 use yaml_sigil_core::{SignatureDocument, validate_payload_stream};
 use yaml_sigil_traits::{
     AlgorithmId, ProtobufWireDecodeAdvertisement, YamlSignatureDocumentDuplicateKeyPolicy,
@@ -44,6 +50,12 @@ pub type SignRequest<'a> =
 
 /// Return the capability set for this crate build.
 pub fn signer_capabilities() -> SignerCapabilities {
+    #[cfg(feature = "std")]
+    const SUPPORTED_ALGORITHMS: &[AlgorithmId] =
+        &[AlgorithmId::Ed25519, AlgorithmId::EcdsaP256Sha256];
+    #[cfg(not(feature = "std"))]
+    const SUPPORTED_ALGORITHMS: &[AlgorithmId] = &[AlgorithmId::Ed25519];
+
     SignerCapabilities {
         protobuf_wire_decode: ProtobufWireDecodeAdvertisement::UnprofiledStockDecoder,
         yaml_signature_duplicate_key_policy:
@@ -51,7 +63,7 @@ pub fn signer_capabilities() -> SignerCapabilities {
         yaml_signature_unknown_field_policy:
             YamlSignatureDocumentUnknownFieldPolicy::RejectedAtParse,
         supported_output_forms: &[OutputForm::Yaml, OutputForm::Protobuf],
-        supported_algorithms: &[AlgorithmId::Ed25519, AlgorithmId::EcdsaP256Sha256],
+        supported_algorithms: SUPPORTED_ALGORITHMS,
         best_effort_yaml_validation: false,
         implementation_name: env!("CARGO_PKG_NAME"),
         implementation_version: env!("CARGO_PKG_VERSION"),
@@ -106,7 +118,7 @@ fn normalize_yaml_payload(
     payload: &[u8],
     append_missing_final_newline: bool,
 ) -> Result<Vec<u8>, SignError> {
-    if std::str::from_utf8(payload).is_err() {
+    if core::str::from_utf8(payload).is_err() {
         return Err(SignError::InvalidPayloadBytes);
     }
     if payload.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -130,7 +142,10 @@ fn normalize_yaml_payload(
 ///
 /// For protobuf output, `append_missing_final_newline` is
 /// ignored and the payload bytes are signed and emitted without modification.
-#[instrument(level = "info", skip(req), fields(alg = ?req.algorithm, form = ?req.output_form))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(req), fields(alg = ?req.algorithm, form = ?req.output_form))
+)]
 pub fn sign(req: &SignRequest<'_>) -> SignOutcome {
     sign_inner(req)
 }
@@ -234,7 +249,10 @@ fn emit_proto_artifact(
 }
 
 /// Convenience: sign with YAML output (thin wrapper over [`sign`]).
-#[instrument(level = "info", skip(params), fields(alg = ?params.algorithm))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(params), fields(alg = ?params.algorithm))
+)]
 pub fn sign_yaml(params: &SignYamlParams<'_>) -> Result<Vec<u8>, SignError> {
     let req = SignRequest {
         payload: params.payload,
@@ -253,7 +271,10 @@ pub fn sign_yaml(params: &SignYamlParams<'_>) -> Result<Vec<u8>, SignError> {
 }
 
 /// Convenience: sign with protobuf output (thin wrapper over [`sign`]).
-#[instrument(level = "info", skip(params), fields(alg = ?params.algorithm))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(params), fields(alg = ?params.algorithm))
+)]
 pub fn sign_proto(params: &SignProtoParams<'_>) -> Result<Vec<u8>, SignError> {
     let req = SignRequest {
         payload: params.payload,
@@ -347,9 +368,15 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey as EdSk;
     #[test]
-    fn signer_capabilities_lists_two_algorithms() {
+    fn signer_capabilities_match_entropy_availability() {
         let c = signer_capabilities();
-        assert_eq!(c.supported_algorithms.len(), 2);
+        #[cfg(feature = "std")]
+        assert_eq!(
+            c.supported_algorithms,
+            &[AlgorithmId::Ed25519, AlgorithmId::EcdsaP256Sha256]
+        );
+        #[cfg(not(feature = "std"))]
+        assert_eq!(c.supported_algorithms, &[AlgorithmId::Ed25519]);
         assert_eq!(c.supported_output_forms.len(), 2);
         assert!(!c.best_effort_yaml_validation);
         assert_eq!(

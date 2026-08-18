@@ -32,8 +32,12 @@ include = [
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+std = ["dep:tracing", "yaml-sigil-core/std", "yaml-sigil-traits/std"]
+
 [dependencies]
-tracing = { workspace = true }
+tracing = { workspace = true, optional = true }
 yaml-sigil-core = { workspace = true, default-features = false }
 yaml-sigil-traits = { workspace = true, default-features = false }
 

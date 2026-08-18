@@ -3,6 +3,7 @@
 
 //! Errors surfaced by `yaml-sigil-core`.
 
+use alloc::string::{String, ToString};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -29,6 +30,8 @@ impl From<buffa::DecodeError> for CoreError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::CoreError;
 
     #[test]

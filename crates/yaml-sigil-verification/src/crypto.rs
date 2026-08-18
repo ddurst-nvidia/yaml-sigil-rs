@@ -157,6 +157,8 @@ pub(crate) fn verify_ecdsa_p256_sha256(
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec, vec::Vec};
+
     use super::{
         EcdsaVerifyError, ed25519_challenge, ed25519_signature_is_canonical,
         ed25519_verifying_key_is_admissible, resolve_ed25519_verifying_key,

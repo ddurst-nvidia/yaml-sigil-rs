@@ -3,6 +3,11 @@
 
 //! Strict signature-document subset: serde model + YAML parser.
 
+use alloc::{
+    collections::BTreeSet,
+    format,
+    string::{String, ToString},
+};
 use base64::Engine;
 
 use crate::algorithm::{AlgorithmId, SCHEMA_V1ALPHA1};
@@ -50,10 +55,13 @@ impl SignatureDocument {
 /// parser events, constructed nodes, cumulative scalar bytes, collection
 /// sizes, documents, merge keys, and alias expansion. It rejects anchors,
 /// aliases, and custom tags.
-#[tracing::instrument(level = "debug", skip(bytes), fields(len = bytes.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "debug", skip(bytes), fields(len = bytes.len()))
+)]
 pub fn parse_signature_document(bytes: &[u8]) -> Result<SignatureDocument, CoreError> {
     ensure_signature_document_byte_budget(bytes)?;
-    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidUtf8)?;
+    let text = core::str::from_utf8(bytes).map_err(|_| CoreError::InvalidUtf8)?;
     let config = signature_document_parser_config();
     let documents = noyalib::load_all_with_config(text, &config)
         .map_err(|e| CoreError::SignatureYaml(e.to_string()))?;
@@ -98,11 +106,9 @@ fn ensure_signature_document_byte_budget(bytes: &[u8]) -> Result<(), CoreError> 
 ///
 /// The scan is bounded by the same byte budget as the default parser. The
 /// default parser also rejects unknown fields through [`SignatureDocument`].
-pub fn signature_document_top_level_keys(
-    bytes: &[u8],
-) -> Result<std::collections::BTreeSet<String>, CoreError> {
+pub fn signature_document_top_level_keys(bytes: &[u8]) -> Result<BTreeSet<String>, CoreError> {
     ensure_signature_document_byte_budget(bytes)?;
-    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidUtf8)?;
+    let text = core::str::from_utf8(bytes).map_err(|_| CoreError::InvalidUtf8)?;
     Ok(top_level_keys_flat_line_scan(text))
 }
 
@@ -115,8 +121,8 @@ pub fn has_unknown_signature_document_fields(bytes: &[u8]) -> Result<bool, CoreE
 }
 
 /// Top-level keys from a flat YAML mapping (Tier A signature-document shape).
-fn top_level_keys_flat_line_scan(text: &str) -> std::collections::BTreeSet<String> {
-    let mut keys = std::collections::BTreeSet::new();
+fn top_level_keys_flat_line_scan(text: &str) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -206,6 +212,8 @@ pub fn serialize_signature_document(doc: &SignatureDocument) -> Result<String, C
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use crate::error::CoreError;
 
     use super::SignatureDocument;

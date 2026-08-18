@@ -6,6 +6,8 @@
 //! Does not parse the `YamlSigilSignature` interior; returns the length-delimited body of
 //! field 2 as opaque `signature_carrier` bytes.
 
+use alloc::vec::Vec;
+
 use crate::conformance::OuterConformance;
 use crate::error::CoreError;
 
@@ -97,7 +99,10 @@ pub fn compose_proto_outer(payload: &[u8], signature_carrier: &[u8]) -> Vec<u8> 
 }
 
 /// Decompose outer wire bytes under the selected outer-envelope conformance mode.
-#[tracing::instrument(level = "debug", skip(wire), fields(len = wire.len(), ?mode))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "debug", skip(wire), fields(len = wire.len(), ?mode))
+)]
 pub fn decompose_proto_outer(wire: &[u8], mode: OuterConformance) -> ProtoOuterDecomposeOutcome {
     let mut payload: Option<Vec<u8>> = None;
     let mut payload_count = 0u32;
@@ -178,6 +183,8 @@ pub fn decode_signature_carrier(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]

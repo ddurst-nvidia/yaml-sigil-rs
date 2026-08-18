@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 NVIDIA CORPORATION & AFFILIATES
 // SPDX-License-Identifier: Apache-2.0
 
-use tracing::instrument;
+use alloc::{string::String, vec::Vec};
 use yaml_sigil_core::view_signature_carrier;
 use yaml_sigil_traits::{AlgorithmId, OuterConformance};
 use yaml_sigil_transcription::{DecomposeOutcome, DecomposeRequest, TranscriptionForm, decompose};
@@ -102,7 +102,7 @@ pub(crate) fn pre_verify_proto(
     }
 }
 
-#[instrument(level = "debug", skip_all)]
+#[cfg_attr(feature = "std", tracing::instrument(level = "debug", skip_all))]
 pub(crate) fn verify_proto(
     wire: &[u8],
     keys: &PublicKeys<'_>,

@@ -7,9 +7,12 @@
 //! verifier's verification-stage responsibility (`MalformedAttemptedSigned`),
 //! not metadata extraction.
 
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use base64::Engine;
 use thiserror::Error;
-use tracing::instrument;
 use yaml_sigil_core::{
     SCHEMA_V1ALPHA1, SignatureDocument, compose_proto_outer, parse_signature_document,
     serialize_signature_document, validate_payload_stream, view_signature_carrier,
@@ -92,7 +95,10 @@ fn proto_decompose(wire: &[u8]) -> Result<(Vec<u8>, Vec<u8>), TranscodeError> {
 }
 
 /// Convert a signed YAML artifact into protobuf `SignedYamlArtifact` wire bytes.
-#[instrument(level = "debug", skip(yaml_artifact), fields(len = yaml_artifact.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "debug", skip(yaml_artifact), fields(len = yaml_artifact.len()))
+)]
 pub fn signed_yaml_stream_to_proto_wire(yaml_artifact: &[u8]) -> Result<Vec<u8>, TranscodeError> {
     let (payload, carrier) = yaml_decompose(yaml_artifact)?;
     validate_payload_stream(&payload).map_err(|_| TranscodeError::PayloadInvariant)?;
@@ -114,7 +120,10 @@ pub fn signed_yaml_stream_to_proto_wire(yaml_artifact: &[u8]) -> Result<Vec<u8>,
 }
 
 /// Convert protobuf wire bytes into a signed YAML artifact stream.
-#[instrument(level = "debug", skip(wire), fields(len = wire.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "debug", skip(wire), fields(len = wire.len()))
+)]
 pub fn proto_wire_to_signed_yaml_stream(wire: &[u8]) -> Result<Vec<u8>, TranscodeError> {
     let (payload, carrier) = proto_decompose(wire)?;
     validate_payload_stream(&payload).map_err(|_| TranscodeError::PayloadInvariant)?;
@@ -150,6 +159,7 @@ pub fn proto_wire_to_signed_yaml_stream(wire: &[u8]) -> Result<Vec<u8>, Transcod
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec::Vec};
     use base64::Engine as _;
     use ed25519_dalek::SigningKey as Ed25519SigningKey;
 

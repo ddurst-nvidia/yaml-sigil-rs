@@ -45,13 +45,24 @@ ed25519-dalek = { workspace = true }
 p256 = { workspace = true }
 sha2 = { version = "0.10", default-features = false }
 signature = { version = "2.2", default-features = false }
-tracing = { workspace = true }
+tracing = { workspace = true, optional = true }
 yaml-sigil-core = { workspace = true, default-features = false }
 yaml-sigil-traits = { workspace = true, default-features = false }
 yaml-sigil-transcription = { workspace = true, default-features = false }
 
 [features]
-json-schema-validate = ["yaml-sigil-core/json-schema-validate"]
+default = ["std"]
+std = [
+    "base64/std",
+    "dep:tracing",
+    "ed25519-dalek/std",
+    "p256/std",
+    "signature/std",
+    "yaml-sigil-core/std",
+    "yaml-sigil-traits/std",
+    "yaml-sigil-transcription/std",
+]
+json-schema-validate = ["std", "yaml-sigil-core/json-schema-validate"]
 
 [dev-dependencies]
 buffa = { workspace = true }

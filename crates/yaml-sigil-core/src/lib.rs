@@ -4,6 +4,12 @@
 //! Shared YamlSigil v1alpha1 primitives: artifact decomposition, payload invariants,
 //! algorithm string mapping, and protobuf wire types via `buffa`.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 pub mod algorithm;
 pub mod conformance;
 pub mod decomposition;

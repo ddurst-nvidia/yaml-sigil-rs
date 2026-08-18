@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 NVIDIA CORPORATION & AFFILIATES
 // SPDX-License-Identifier: Apache-2.0
 
+use alloc::{string::String, vec::Vec};
 use base64::Engine;
-use tracing::instrument;
 use yaml_sigil_core::{parse_signature_document, validate_payload_stream};
 use yaml_sigil_traits::AlgorithmId;
 use yaml_sigil_transcription::{DecomposeOutcome, DecomposeRequest, TranscriptionForm, decompose};
@@ -119,7 +119,7 @@ pub(crate) fn pre_verify_yaml(
     }
 }
 
-#[instrument(level = "debug", skip_all)]
+#[cfg_attr(feature = "std", tracing::instrument(level = "debug", skip_all))]
 pub(crate) fn verify_yaml(
     artifact: &[u8],
     keys: &PublicKeys<'_>,

@@ -3,6 +3,8 @@
 
 //! Protobuf wire decode/encode helpers.
 
+use alloc::{string::String, vec::Vec};
+
 use crate::error::CoreError;
 use crate::proto_outer::decode_signature_carrier;
 
@@ -62,6 +64,8 @@ pub fn view_signature_carrier(carrier: &[u8]) -> Result<ProtoArtifactView, CoreE
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::{
         decode_signed_yaml_artifact, encode_signed_yaml_artifact, view_signed_yaml_artifact,
     };

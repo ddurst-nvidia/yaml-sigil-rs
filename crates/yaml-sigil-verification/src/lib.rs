@@ -8,6 +8,12 @@
 //! `ED25519_PUREEDDSA_RAW_RS64_CANONICAL` (Ed25519 RFC 8032, raw `R || S`); slot
 //! 2 is `ECDSA_SECP256R1_SHA256_RAW_RS64` (raw `R || S` 64 octets).
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 mod crypto;
 mod proto_verify;
 mod yaml_verify;
@@ -94,7 +100,10 @@ pub fn verifier_capabilities() -> VerifierCapabilities {
 }
 
 /// Verify `input_bytes` using the selected artifact form (mirrors `Verify` with a `Form` enum).
-#[tracing::instrument(level = "info", skip_all, fields(len = input_bytes.len(), form = ?form))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip_all, fields(len = input_bytes.len(), form = ?form))
+)]
 pub fn verify(
     input_bytes: &[u8],
     form: ArtifactForm,
@@ -105,7 +114,10 @@ pub fn verify(
 }
 
 /// Verify with optional parser observations (IDL `VerifyRequest.include_parser_observations`).
-#[tracing::instrument(level = "info", skip_all, fields(len = input_bytes.len(), form = ?form))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip_all, fields(len = input_bytes.len(), form = ?form))
+)]
 pub fn verify_with_metadata(
     input_bytes: &[u8],
     form: ArtifactForm,
@@ -135,7 +147,10 @@ pub fn verify_with_metadata(
 }
 
 /// Verify a YAML artifact byte sequence.
-#[tracing::instrument(level = "info", skip_all, fields(len = artifact.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip_all, fields(len = artifact.len()))
+)]
 pub fn verify_yaml(
     artifact: &[u8],
     keys: &PublicKeys<'_>,
@@ -145,7 +160,10 @@ pub fn verify_yaml(
 }
 
 /// Verify protobuf `SignedYamlArtifact` wire bytes.
-#[tracing::instrument(level = "info", skip_all, fields(len = wire.len()))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip_all, fields(len = wire.len()))
+)]
 pub fn verify_proto(
     wire: &[u8],
     keys: &PublicKeys<'_>,

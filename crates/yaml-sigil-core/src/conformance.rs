@@ -6,6 +6,8 @@
 //! These are **not** the upstream protobuf `ConformanceProfile` enum values; they describe observable
 //! semantics for callers building UIs or policy around this implementation.
 
+use alloc::{vec, vec::Vec};
+
 pub use yaml_sigil_traits::{
     OuterConformance, ProtobufWireDecodeAdvertisement, YamlSignatureDocumentDuplicateKeyPolicy,
     YamlSignatureDocumentUnknownFieldPolicy,

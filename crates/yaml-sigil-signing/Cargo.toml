@@ -38,7 +38,7 @@ buffa = { workspace = true, default-features = false }
 ed25519-dalek = { workspace = true }
 p256 = { workspace = true }
 thiserror = { version = "2", default-features = false }
-tracing = { workspace = true }
+tracing = { workspace = true, optional = true }
 yaml-sigil-core = { workspace = true, default-features = false }
 yaml-sigil-traits = { workspace = true, default-features = false }
 yaml-sigil-transcription = { workspace = true, default-features = false }
@@ -47,4 +47,16 @@ yaml-sigil-transcription = { workspace = true, default-features = false }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
-json-schema-validate = ["yaml-sigil-core/json-schema-validate"]
+default = ["std"]
+std = [
+    "base64/std",
+    "buffa/std",
+    "dep:tracing",
+    "ed25519-dalek/std",
+    "p256/std",
+    "thiserror/std",
+    "yaml-sigil-core/std",
+    "yaml-sigil-traits/std",
+    "yaml-sigil-transcription/std",
+]
+json-schema-validate = ["std", "yaml-sigil-core/json-schema-validate"]

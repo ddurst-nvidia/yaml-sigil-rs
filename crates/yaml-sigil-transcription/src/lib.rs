@@ -3,7 +3,12 @@
 
 //! YamlSigil v1alpha1 Transcription API: bytes-only Compose / Decompose.
 
-use tracing::instrument;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
 use yaml_sigil_core::{
     DecompositionOutcome, ProtoOuterDecomposeOutcome, compose_proto_outer, decompose_artifact,
     decompose_proto_outer, validate_payload_stream,
@@ -76,7 +81,10 @@ fn contains_constrained_marker(carrier: &[u8]) -> bool {
 }
 
 /// Assemble envelope-form bytes from an abstract Artifact.
-#[instrument(level = "info", skip(req), fields(form = ?req.form))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(req), fields(form = ?req.form))
+)]
 pub fn compose(req: &ComposeRequest<'_>) -> ComposeOutcome {
     if let Err(e) = validate_compose_invocation(req) {
         return ComposeOutcome::Invocation(e);
@@ -103,7 +111,10 @@ pub fn compose(req: &ComposeRequest<'_>) -> ComposeOutcome {
 }
 
 /// Recover abstract Artifact bytes from an envelope.
-#[instrument(level = "info", skip(req), fields(form = ?req.form))]
+#[cfg_attr(
+    feature = "std",
+    tracing::instrument(level = "info", skip(req), fields(form = ?req.form))
+)]
 pub fn decompose(req: &DecomposeRequest<'_>) -> DecomposeResponse {
     let outer = match validate_decompose_invocation(req) {
         Ok(o) => o,
@@ -275,6 +286,8 @@ fn decompose_proto(wire: &[u8], mode: OuterConformance) -> DecomposeResponse {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]
