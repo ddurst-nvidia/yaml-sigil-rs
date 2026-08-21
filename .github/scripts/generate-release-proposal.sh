@@ -14,10 +14,16 @@ set -euo pipefail
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 : "${MODE:?MODE is required}"
 : "${PUBLISHED_VERSION:?PUBLISHED_VERSION is required}"
+: "${REGISTRY_MANIFEST_PATH:?REGISTRY_MANIFEST_PATH is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 # An empty marker is meaningful because it clears an earlier override.
 if [[ ! -v RELEASE_MARKER ]]; then
   echo "RELEASE_MARKER must be set, even when empty." >&2
+  exit 2
+fi
+# The baseline helper must provide one clean detached official manifest.
+if [[ ! -f "${REGISTRY_MANIFEST_PATH}" ]]; then
+  echo "The official registry baseline manifest is missing." >&2
   exit 2
 fi
 
@@ -67,7 +73,9 @@ if [[ "${MODE}" == "promote-stable" ]]; then
 else
   # release-plz provides Conventional Commit analysis and changelog generation;
   # xtask then normalizes its result into the repository's RC policy.
-  release-plz update --config .release-plz.toml
+  release-plz update \
+    --config .release-plz.toml \
+    --registry-manifest-path "${REGISTRY_MANIFEST_PATH}"
   release_notes=false
   # A changelog diff distinguishes a substantive proposal from an empty seed.
   if ! git diff --quiet -- "${changelog_paths[@]}"; then

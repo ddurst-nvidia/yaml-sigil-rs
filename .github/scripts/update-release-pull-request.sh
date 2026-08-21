@@ -33,9 +33,10 @@ if [[ "${remote_main}" != "${GITHUB_SHA}" ]]; then
   echo "Main advanced while the release proposal was being generated." >&2
   exit 1
 fi
-# Preserve release-plz's merged-PR source-authorization convention.
-if [[ "${RELEASE_BRANCH}" != release-plz-* ]]; then
-  echo "The release branch must use the release-plz- prefix." >&2
+# Only the repository's dedicated release App and branch own this automation.
+if [[ "${APP_SLUG}" != "nvidia-yamlsigil-release-pr" \
+  || "${RELEASE_BRANCH}" != "release-plz-next" ]]; then
+  echo "The release proposal App or branch identity is unexpected." >&2
   exit 1
 fi
 # Reject values that cannot be sent as a typed GitHub API boolean.
@@ -51,6 +52,22 @@ fi
 RELEASE_BODY="$(<"${RELEASE_BODY_FILE}")"
 
 git diff --check
+# The helper consumes one unstaged generated diff and no index or untracked state.
+if ! git diff --cached --quiet; then
+  echo "Release automation may not consume staged changes." >&2
+  exit 1
+fi
+mapfile -t untracked_paths < <(git ls-files --others --exclude-standard)
+# Generated release automation may not leave files outside the tracked diff.
+if ((${#untracked_paths[@]} != 0)); then
+  echo "Release automation may only modify existing files." >&2
+  exit 1
+fi
+# Mode changes are outside the generated release file-content boundary.
+if [[ -n "$(git diff --summary)" ]]; then
+  echo "Release automation may not change file modes or path identity." >&2
+  exit 1
+fi
 mapfile -t changed_paths < <(git diff --name-only --no-renames)
 # Refuse to create an empty commit or an authorization-only empty PR.
 if ((${#changed_paths[@]} == 0)); then
@@ -75,25 +92,114 @@ for path in "${changed_paths[@]}"; do
   esac
 done
 
+# Generated release commits may change only files already present on main.
+while IFS=$'\t' read -r status path; do
+  # Added, deleted, renamed, or type-changed paths exceed release authority.
+  if [[ "${status}" != "M" ]]; then
+    echo "Release automation may only modify existing files; found ${status} ${path}." >&2
+    exit 1
+  fi
+done < <(git diff --name-status --no-renames)
+
 bot_login="${APP_SLUG}[bot]"
 bot="$(gh api "users/${bot_login}")"
 bot_id="$(jq --raw-output .id <<<"${bot}")"
+# The App identity endpoint must resolve the exact expected bot and numeric ID.
+if ! jq --exit-status --arg bot "${bot_login}" \
+  '.login == $bot and (.id | type == "number" and . > 0)' \
+  <<<"${bot}" >/dev/null; then
+  echo "GitHub did not return the expected release App bot identity." >&2
+  exit 1
+fi
 bot_email="${bot_id}+${bot_login}@users.noreply.github.com"
 
 # Never overwrite unique commits that were not authored by this App. Commits
 # already integrated into main are not unique and do not block a new train.
 target_exists=false
-# Inspect ownership only when the reusable release branch already exists.
-if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
-  >/dev/null 2>&1; then
+target_response=""
+# A matching-ref query distinguishes absence from permission and API failures.
+target_refs="$(
+  gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/${RELEASE_BRANCH}"
+)"
+# Prefix matches, duplicates, symbolic refs, and malformed objects are collisions.
+if ! jq --exit-status \
+  --arg ref "refs/heads/${RELEASE_BRANCH}" \
+  'type == "array"
+    and length <= 1
+    and all(.[];
+      .ref == $ref
+      and .object.type == "commit"
+      and (.object.sha | test("^[0-9a-f]{40}$")))' \
+  <<<"${target_refs}" >/dev/null; then
+  echo "GitHub returned ambiguous release branch state." >&2
+  exit 1
+fi
+# Inspect ownership only when the exact reusable release branch already exists.
+if [[ "$(jq 'length' <<<"${target_refs}")" == "1" ]]; then
   target_exists=true
+  target_response="$(jq --compact-output '.[0]' <<<"${target_refs}")"
+  target_sha="$(jq --raw-output '.object.sha // empty' <<<"${target_response}")"
   compare="$(
     gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_BRANCH}"
   )"
-  # Preserve any branch that contains a unique human or other-App commit.
+  # Preserve branches with multiple unique commits, incomplete pagination, or
+  # a unique commit not attributed to this exact App.
   if ! jq --exit-status --arg bot "${bot_login}" \
-    'all(.commits[]; .author.login == $bot)' <<<"${compare}" >/dev/null; then
+    '.ahead_by <= 1
+      and .ahead_by == (.commits | length)
+      and all(.commits[]; .author.login == $bot)' \
+    <<<"${compare}" >/dev/null; then
     echo "${RELEASE_BRANCH} contains a non-App commit and will not be overwritten." >&2
+    exit 1
+  fi
+  # A unique existing App commit must retain its signature, DCO, and one parent.
+  if [[ "$(jq '.ahead_by' <<<"${compare}")" == "1" ]]; then
+    existing_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target_sha}")"
+    # Reject an App-looking branch whose repository-visible commit is invalid.
+    if ! jq --exit-status \
+      --arg bot "${bot_login}" \
+      --arg dco "Signed-off-by: ${bot_login} <${bot_email}>" \
+      '.author.login == $bot
+        and .commit.verification.verified == true
+        and .commit.verification.reason == "valid"
+        and (.commit.message | endswith($dco))
+        and (.parents | length == 1)' \
+      <<<"${existing_commit}" >/dev/null; then
+      echo "${RELEASE_BRANCH} contains an invalid App commit." >&2
+      exit 1
+    fi
+  fi
+fi
+
+pulls="$(
+  gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
+    -f state=open -f "head=${GITHUB_REPOSITORY%%/*}:${RELEASE_BRANCH}"
+)"
+# More than one open pull request for the durable branch is ambiguous.
+if [[ "$(jq 'length' <<<"${pulls}")" -gt 1 ]]; then
+  echo "Multiple open release pull requests use ${RELEASE_BRANCH}." >&2
+  exit 1
+fi
+pr_number="$(jq --raw-output '.[0].number // empty' <<<"${pulls}")"
+# An existing PR must bind the exact owned ref to this repository's main.
+if [[ -n "${pr_number}" ]]; then
+  # A missing owned ref or any mismatched PR field blocks all Git writes.
+  if [[ "${target_exists}" != "true" ]] \
+    || ! jq --exit-status \
+      --arg repository "${GITHUB_REPOSITORY}" \
+      --arg branch "${RELEASE_BRANCH}" \
+      --arg sha "${target_sha}" \
+      --arg bot "${bot_login}" \
+      'length == 1
+        and .[0].state == "open"
+        and .[0].user.login == $bot
+        and .[0].head.repo.full_name == $repository
+        and .[0].head.ref == $branch
+        and .[0].head.sha == $sha
+        and .[0].base.repo.full_name == $repository
+        and .[0].base.ref == "main"' \
+      <<<"${pulls}" >/dev/null; then
+    echo "The existing release pull request has unexpected ownership or refs." >&2
     exit 1
   fi
 fi
@@ -102,18 +208,11 @@ tree_entries='[]'
 while IFS=$'\t' read -r status path; do
   # Translate the already allowlisted text diff into one exact Git tree.
   case "${status}" in
-    A | M)
+    M)
       tree_entries="$(
         jq --compact-output \
           --arg path "${path}" --rawfile contents "${path}" \
           ". + [{path: \$path, mode: \"100644\", type: \"blob\", content: \$contents}]" \
-          <<<"${tree_entries}"
-      )"
-      ;;
-    D)
-      tree_entries="$(
-        jq --compact-output --arg path "${path}" \
-          ". + [{path: \$path, mode: \"100644\", type: \"blob\", sha: null}]" \
           <<<"${tree_entries}"
       )"
       ;;
@@ -136,20 +235,37 @@ cleanup_staging() {
 }
 trap cleanup_staging EXIT
 
+staging_response=""
 # Start from an exact-main ref that the App can fast-forward after signing.
-if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-  -f "ref=refs/heads/${staging_branch}" -f "sha=${GITHUB_SHA}" \
-  >/dev/null; then
+if ! staging_response="$(
+  gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+    -f "ref=refs/heads/${staging_branch}" -f "sha=${GITHUB_SHA}"
+)"; then
   echo "GitHub did not create the exact-main staging branch." >&2
+  exit 1
+fi
+# The creation response must bind the explicit staging ref to exact main.
+if ! jq --exit-status \
+  --arg ref "refs/heads/${staging_branch}" \
+  --arg sha "${GITHUB_SHA}" \
+  '.ref == $ref and .object.type == "commit" and .object.sha == $sha' \
+  <<<"${staging_response}" >/dev/null; then
+  echo "GitHub created an unexpected staging ref." >&2
   exit 1
 fi
 staging_created=true
 
 message_body="Signed-off-by: ${bot_login} <${bot_email}>"
 commit_message="${RELEASE_TITLE}"$'\n\n'"${message_body}"
+base_tree="$(git rev-parse --verify "${GITHUB_SHA}^{tree}")"
+# GitHub's tree API requires the exact parent tree, not its commit identifier.
+if [[ ! "${base_tree}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "The triggering main commit did not resolve to one exact tree." >&2
+  exit 1
+fi
 tree_payload="$(
   jq --null-input \
-    --arg base_tree "${GITHUB_SHA}" \
+    --arg base_tree "${base_tree}" \
     --argjson tree "${tree_entries}" \
     "{base_tree: \$base_tree, tree: \$tree}"
 )"
@@ -163,8 +279,8 @@ if ! tree_response="$(
   exit 1
 fi
 tree_sha="$(jq --raw-output '.sha // empty' <<<"${tree_response}")"
-# Refuse to create a commit without the exact generated tree identity.
-if [[ -z "${tree_sha}" ]]; then
+# Refuse to create a commit without a lowercase full tree identity.
+if [[ ! "${tree_sha}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GitHub did not return the generated release tree SHA." >&2
   exit 1
 fi
@@ -186,8 +302,8 @@ if ! commit_response="$(
   exit 1
 fi
 commit_sha="$(jq --raw-output '.sha // empty' <<<"${commit_response}")"
-# A missing object indicates a Git Database validation or authorization failure.
-if [[ -z "${commit_sha}" ]]; then
+# A malformed object indicates a Git Database validation or authorization failure.
+if [[ ! "${commit_sha}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GitHub did not create the release proposal commit." >&2
   exit 1
 fi
@@ -201,11 +317,15 @@ if ! jq --exit-status \
   --arg bot_email "${bot_email}" \
   --arg dco "${message_body}" \
   --arg parent "${GITHUB_SHA}" \
+  --arg tree "${tree_sha}" \
   ".author.name == \$bot
     and .author.email == \$bot_email
+    and .committer.name == \$bot
+    and .committer.email == \$bot_email
     and .verification.verified == true
     and .verification.reason == \"valid\"
     and (.message | endswith(\$dco))
+    and .tree.sha == \$tree
     and (.parents | length == 1)
     and .parents[0].sha == \$parent" \
   <<<"${commit_response}" >/dev/null; then
@@ -225,10 +345,19 @@ fi
 
 # Fast-forwarding an existing ref is GitHub's documented final App-signing
 # step and makes the verified commit reachable before any durable ref moves.
-if ! gh api --method PATCH \
-  "repos/${GITHUB_REPOSITORY}/git/refs/heads/${staging_branch}" \
-  -f "sha=${commit_sha}" -F force=false >/dev/null; then
+if ! staging_response="$(
+  gh api --method PATCH \
+    "repos/${GITHUB_REPOSITORY}/git/refs/heads/${staging_branch}" \
+    -f "sha=${commit_sha}" -F force=false
+)"; then
   echo "GitHub did not fast-forward the App staging branch." >&2
+  exit 1
+fi
+# The staged ref must now make only the exact signed commit reachable.
+if ! jq --exit-status --arg sha "${commit_sha}" \
+  '.object.type == "commit" and .object.sha == $sha' \
+  <<<"${staging_response}" >/dev/null; then
+  echo "GitHub fast-forwarded the staging ref to an unexpected object." >&2
   exit 1
 fi
 reachable_commit=""
@@ -245,6 +374,7 @@ if ! jq --exit-status \
   --arg dco "${message_body}" \
   --arg parent "${GITHUB_SHA}" \
   ".author.login == \$bot
+    and .committer.login == \$bot
     and .commit.verification.verified == true
     and .commit.verification.reason == \"valid\"
     and (.commit.message | endswith(\$dco))
@@ -258,20 +388,32 @@ fi
 # Update an owned branch atomically, or create it for the first release train.
 if [[ "${target_exists}" == "true" ]]; then
   # Refuse to continue if GitHub cannot update the already App-owned branch.
-  if ! gh api --method PATCH \
-    "repos/${GITHUB_REPOSITORY}/git/refs/heads/${RELEASE_BRANCH}" \
-    -f "sha=${commit_sha}" -F force=true >/dev/null; then
+  if ! target_response="$(
+    gh api --method PATCH \
+      "repos/${GITHUB_REPOSITORY}/git/refs/heads/${RELEASE_BRANCH}" \
+      -f "sha=${commit_sha}" -F force=true
+  )"; then
     echo "GitHub did not update the App-owned release branch." >&2
     exit 1
   fi
 else
   # Refuse to continue if GitHub cannot create the first release branch.
-  if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-    -f "ref=refs/heads/${RELEASE_BRANCH}" -f "sha=${commit_sha}" \
-    >/dev/null; then
+  if ! target_response="$(
+    gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+      -f "ref=refs/heads/${RELEASE_BRANCH}" -f "sha=${commit_sha}"
+  )"; then
     echo "GitHub did not create the App-owned release branch." >&2
     exit 1
   fi
+fi
+# The mutation response must bind the durable branch to the signed commit.
+if ! jq --exit-status \
+  --arg ref "refs/heads/${RELEASE_BRANCH}" \
+  --arg sha "${commit_sha}" \
+  '.ref == $ref and .object.type == "commit" and .object.sha == $sha' \
+  <<<"${target_response}" >/dev/null; then
+  echo "GitHub returned an unexpected durable release ref." >&2
+  exit 1
 fi
 release_sha="$(
   gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
@@ -283,11 +425,6 @@ if [[ "${release_sha}" != "${commit_sha}" ]]; then
   exit 1
 fi
 
-pulls="$(
-  gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
-    -f state=open -f "head=${GITHUB_REPOSITORY%%/*}:${RELEASE_BRANCH}"
-)"
-pr_number="$(jq --raw-output '.[0].number // empty' <<<"${pulls}")"
 # Create the first PR for a train; otherwise update the existing open PR.
 if [[ -z "${pr_number}" ]]; then
   pr="$(
@@ -304,20 +441,70 @@ else
     gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
       -f "title=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}"
   )"
-  # A substantive update may promote an earlier empty draft to ready status.
-  if [[ "${RELEASE_DRAFT}" == "false" \
-    && "$(jq --raw-output .draft <<<"${pr}")" == "true" ]]; then
+  current_draft="$(jq --raw-output .draft <<<"${pr}")"
+  # Keep the PR's review state aligned with the generated proposal state.
+  if [[ "${current_draft}" != "${RELEASE_DRAFT}" ]]; then
     pull_request_id="$(jq --raw-output .node_id <<<"${pr}")"
-    # Keep GraphQL's `$id` variable literal for the API rather than the shell.
-    # shellcheck disable=SC2016
-    gh api graphql \
-      -f query='mutation($id: ID!) {
-        markPullRequestReadyForReview(input: {pullRequestId: $id}) {
-          pullRequest { number }
-        }
-      }' \
-      -f "id=${pull_request_id}" >/dev/null
+    # Ready proposals leave draft state; empty seed proposals return to draft.
+    if [[ "${RELEASE_DRAFT}" == "false" ]]; then
+      # Keep GraphQL's `$id` variable literal for the API rather than the shell.
+      # shellcheck disable=SC2016
+      gh api graphql \
+        -f query='mutation($id: ID!) {
+          markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+            pullRequest { number }
+          }
+        }' \
+        -f "id=${pull_request_id}" >/dev/null
+    else
+      # Keep GraphQL's `$id` variable literal for the API rather than the shell.
+      # shellcheck disable=SC2016
+      gh api graphql \
+        -f query='mutation($id: ID!) {
+          convertPullRequestToDraft(input: {pullRequestId: $id}) {
+            pullRequest { number }
+          }
+        }' \
+        -f "id=${pull_request_id}" >/dev/null
+    fi
   fi
+fi
+
+final_pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+# Bind the final review surface to the exact repository, refs, commit, and body.
+if ! jq --exit-status \
+  --arg repository "${GITHUB_REPOSITORY}" \
+  --arg branch "${RELEASE_BRANCH}" \
+  --arg sha "${commit_sha}" \
+  --arg bot "${bot_login}" \
+  --arg title "${RELEASE_TITLE}" \
+  --arg body "${RELEASE_BODY}" \
+  --argjson number "${pr_number}" \
+  --argjson draft "${RELEASE_DRAFT}" \
+  '.number == $number
+    and .state == "open"
+    and .user.login == $bot
+    and .head.repo.full_name == $repository
+    and .head.ref == $branch
+    and .head.sha == $sha
+    and .base.repo.full_name == $repository
+    and .base.ref == "main"
+    and .title == $title
+    and .body == $body
+    and .commits == 1
+    and .draft == $draft' \
+  <<<"${final_pr}" >/dev/null; then
+  echo "GitHub returned an unexpected release pull-request state." >&2
+  exit 1
+fi
+
+final_main="$(
+  gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha
+)"
+# A proposal that raced with main is stale even if its PR was created cleanly.
+if [[ "${final_main}" != "${GITHUB_SHA}" ]]; then
+  echo "Main advanced before the release pull request was finalized." >&2
+  exit 1
 fi
 
 echo "commit_sha=${commit_sha}" >>"${GITHUB_OUTPUT}"

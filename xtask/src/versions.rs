@@ -47,15 +47,6 @@ enum ReleaseVersionCommand {
     Show,
     /// Validate the version and synchronized internal dependency requirements.
     Check,
-    /// Set an ephemeral pull-request snapshot version.
-    Snapshot {
-        /// Pull-request number.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        pr: u64,
-        /// Full pull-request head commit SHA.
-        #[arg(long)]
-        sha: String,
-    },
     /// Set the next RC candidate after release-plz computes changelogs.
     Candidate {
         /// Version currently published for every release crate.
@@ -98,13 +89,6 @@ pub fn release_version(root: &Path, args: ReleaseVersionArgs) -> Result<()> {
             validate_crates_io_traits_dependency(root)?;
             validate_stable_traits_dependency(root, &version)?;
             eprintln!("release-version: workspace version is {version}");
-        }
-        ReleaseVersionCommand::Snapshot { pr, sha } => {
-            validate_crates_io_traits_dependency(root)?;
-            let version = snapshot_version(&read_workspace_version(root)?, pr, &sha)?;
-            write_workspace_version(root, &version)?;
-            sync_workspace_dependency_versions(root, false)?;
-            println!("{version}");
         }
         ReleaseVersionCommand::Candidate {
             published,
@@ -245,18 +229,6 @@ fn set_version_on_line(line: &str, version: &str) -> Result<String> {
         version,
         &line[suffix_start..]
     ))
-}
-
-fn snapshot_version(current: &Version, pr: u64, sha: &str) -> Result<Version> {
-    if sha.len() < 12 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("--sha must contain at least 12 hexadecimal characters");
-    }
-    let short_sha = sha[..12].to_ascii_lowercase();
-    Version::parse(&format!(
-        "{}.{}.{}-0.pr.{pr}.commit.sha{short_sha}",
-        current.major, current.minor, current.patch
-    ))
-    .context("construct snapshot version")
 }
 
 fn candidate_version(published: &Version, current: &Version, bump: ReleaseBump) -> Result<Version> {
@@ -823,44 +795,6 @@ mod tests {
             assert!(validate_crates_io_traits_dependency(&root).is_err());
             cleanup_temp_test_root(root);
         }
-    }
-
-    #[test]
-    fn snapshot_rejects_git_traits_without_writing() {
-        // Snapshot version mutation must fail closed before touching the PR
-        // manifest when a review-only Git source remains present.
-        let root = temp_test_root("snapshot-git-traits");
-        write_test_workspace_manifest_with_traits_source(
-            &root,
-            "0.5.0-rc.1",
-            "0.5.0-rc.1",
-            "=0.4.0-rc.1",
-            r#"git = "https://github.com/NVIDIA/yaml-sigil-traits.git""#,
-        );
-        let before = fs::read_to_string(root.join("Cargo.toml")).unwrap();
-
-        let result = release_version(
-            &root,
-            ReleaseVersionArgs {
-                command: ReleaseVersionCommand::Snapshot {
-                    pr: 10,
-                    sha: "e573f163a0749ac59ee95dfe2551ebde9f5620f8".to_owned(),
-                },
-            },
-        );
-
-        assert!(result.is_err());
-        assert_eq!(fs::read_to_string(root.join("Cargo.toml")).unwrap(), before);
-        cleanup_temp_test_root(root);
-    }
-
-    #[test]
-    fn snapshot_uses_core_and_twelve_hex_characters() {
-        let current = Version::parse("0.4.0-rc.3").unwrap();
-        assert_eq!(
-            snapshot_version(&current, 17, "ABCDEF0123456789").unwrap(),
-            Version::parse("0.4.0-0.pr.17.commit.shaabcdef012345").unwrap()
-        );
     }
 
     #[test]

@@ -55,9 +55,7 @@ cargo xtask sync-workspace-versions --check
 ```
 
 Official RC and stable publication rejects an unsynchronized or dirty source
-tree. Pull-request snapshots are different. Their `0.pr` versions are applied
-only in an ephemeral checkout and may be published from that intentionally
-dirty tree without mutating the contributor's branch.
+tree.
 
 ## Pull-request CI
 

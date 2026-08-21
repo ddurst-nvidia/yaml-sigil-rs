@@ -41,6 +41,17 @@ The workflow remains a successful no-op while the GitHub App configuration is
 absent. It also waits without advancing the train until the shared version on
 `main` is available and non-yanked for all four crates on crates.io.
 
+Release proposals enter `protected-automation`, which is restricted to exact
+`main` and supplies only the App credential. Official publication enters
+`crates-io`, whose configured approval gates the OIDC-enabled publication job.
+Validation enters neither environment and receives no OIDC permission.
+
+Every proposal resolves one workspace comparison baseline from the last
+official annotated four-tag release. All four tags must match origin, resolve
+to one commit, and be ancestors of current remote `main`; the exact shared
+version must be non-yanked for all four crates. Registry prereleases that have
+no complete official tag set never become release-analysis baselines.
+
 ### Manual release-proposal fallback
 
 > [!IMPORTANT]
@@ -51,11 +62,10 @@ absent. It also waits without advancing the train until the shared version on
 
 Use this procedure when the App is unavailable or cannot safely update its
 owned proposal. A repository writer may prepare the same release transaction
-on a human-authored branch. Use release-plz `0.3.160`. Create a same-repository
-branch named `release-plz-manual-<target>` from the exact current `main`; do
-not reuse the workflow-owned `release-plz-next` branch. Confirm that the shared
-version currently in `Cargo.toml` is available and non-yanked for all four
-crates on crates.io before advancing it.
+on a human-authored branch. Use cargo-binstall `1.20.1`, release-plz `0.3.160`,
+and cargo-semver-checks `0.48.0`. Create a same-repository branch named
+`release-plz-manual-<target>` from exact current `main`; do not reuse the
+workflow-owned `release-plz-next` branch.
 
 Before creating the manual branch, inspect any existing `release-plz-next`
 proposal. Do not append a human commit to it or replace its App-owned head.
@@ -63,14 +73,52 @@ Finish or close that proposal and verify current `main` and crates.io state, or
 leave it intact while using the distinctly named manual branch. Do not run the
 two proposal paths concurrently.
 
-For the next substantive RC proposal, run:
+Before either proposal mode, fetch current main and tags, verify the analyzer
+versions and split-crate identity, and prepare the detached official baseline:
 
 ```shell
+git fetch origin main --tags
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+test "$(cargo-binstall --version)" = "cargo-binstall 1.20.1"
+bash .github/scripts/install-release-tools.sh
 published_version="$(cargo xtask release-version show)"
+bash .github/scripts/verify-crates-io-packages.sh \
+  --check-version "${published_version}" \
+  yaml-sigil-core \
+  yaml-sigil-transcription \
+  yaml-sigil-signing \
+  yaml-sigil-verification
+CARGO_REGISTRIES_CRATES_IO_INDEX=https://github.com/rust-lang/crates.io-index \
+  bash .github/scripts/verify-release-traits.sh
+baseline_parent="$(mktemp -d)"
+baseline_root="${baseline_parent}/official-release"
+fetch_url="$(git remote get-url origin)"
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=remote.origin.pushurl \
+GIT_CONFIG_VALUE_0=disabled://yaml-sigil-release-proposal \
+  python3 .github/scripts/prepare_release_baseline.py \
+    --repository NVIDIA/yaml-sigil-rs \
+    --version "${published_version}" \
+    --head "$(git rev-parse HEAD)" \
+    --output "${baseline_root}" \
+    --expected-fetch-url "${fetch_url}"
+registry_manifest_path="${baseline_root}/Cargo.toml"
+```
+
+Stop if current main, a registry record, traits identity, tag type, tag target,
+tag agreement, ancestry, or remote ref differs. For the next substantive RC
+proposal, set the reviewed intent and run:
+
+```shell
 release_date="$(date -u +%F)"
 bump="auto"
 # Generate each Conventional Commit changelog and preliminary version change.
-release-plz update --config .release-plz.toml
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=remote.origin.pushurl \
+GIT_CONFIG_VALUE_0=disabled://yaml-sigil-release-proposal \
+  release-plz update \
+    --config .release-plz.toml \
+    --registry-manifest-path "${registry_manifest_path}"
 git diff --name-only -- \
   crates/yaml-sigil-core/CHANGELOG.md \
   crates/yaml-sigil-transcription/CHANGELOG.md \
@@ -94,16 +142,20 @@ cargo xtask sync-workspace-versions
 cargo xtask sync-workspace-versions --check
 ```
 
-The captured `published_version` must be the exact shared non-yanked crates.io
-version. Leave `bump` as `auto` unless the reviewed change requires an explicit
-`patch`, `minor`, or `major` version-line advance.
+Leave `bump` as `auto` unless review explicitly requires a `patch`, `minor`, or
+`major` version-line advance. Never run per-package baseline generation or
+infer the baseline from a higher registry prerelease.
 
-For stable promotion, first apply every provenance check in
-"Promote an RC to stable" and confirm all four published RC tags resolve to
-the exact current `main` commit. Then create the manual branch and run:
+For stable promotion, use the same baseline preparation and require all four
+tag commits to equal exact current `main`. Then create the manual branch and
+run:
 
 ```shell
 release_date="$(date -u +%F)"
+for crate in core transcription signing verification; do
+  test "$(git rev-parse "yaml-sigil-${crate}-v${published_version}^{commit}")" \
+    = "$(git rev-parse HEAD)"
+done
 cargo xtask release-version promote-stable --date "${release_date}"
 cargo xtask sync-workspace-versions
 cargo xtask sync-workspace-versions --check
@@ -118,6 +170,8 @@ For either path, review the generated transaction and run:
 ```shell
 cargo xtask release-version check
 cargo xtask ci
+CARGO_REGISTRIES_CRATES_IO_INDEX=https://github.com/rust-lang/crates.io-index \
+  bash .github/scripts/verify-release-traits.sh
 bash .github/scripts/check-release-packages.sh \
   yaml-sigil-core \
   yaml-sigil-transcription \
@@ -157,6 +211,12 @@ The process-scoped `GIT_TOKEN` must not be echoed, pasted, or persisted. Verify
 that the dry run plans all four crates in dependency order and does not report
 that the current commit is not from a release pull request. It must not publish
 or create tags or GitHub Releases.
+
+If either `release-plz-next` or the selected manual branch already exists,
+inspect its owner, exact ref, open pull request, and commits before proceeding.
+Never overwrite a foreign or unexpected branch. Resolve the collision by
+finishing, closing, or deliberately renaming the human branch, then rerun all
+main, tag, registry, traits, and baseline checks.
 
 Review and integrate the exact head through the ordinary protected path only
 after `Required CI` and all three Rust platform jobs pass. If a repair is
@@ -220,50 +280,6 @@ that retains a prerelease traits requirement.
 Review and merge that exact proposal before publishing the stable version. Do
 not edit a contributor branch to remove `rc.N`, and do not promote source that
 differs from the tagged RC.
-
-## Publish a tested pull-request snapshot
-
-A repository writer can publish the exact head of an open pull request that
-targets `main` after its current `pull-request/<number>` copied branch matches
-that head and has a successful completed `push` run of `ci.yml`. Use the manual
-workflow form with `validate-pr` or `publish-pr` and the pull request number:
-
-```shell
-gh workflow run publish.yml --ref main \
-  -f operation=validate-pr -f pr_number=123
-gh workflow run publish.yml --ref main \
-  -f operation=publish-pr -f pr_number=123
-```
-
-The workflow does not accept an older `pull_request` run or a
-`workflow_dispatch` run as copied-head evidence. It rechecks the caller's
-repository permission, pull-request state, exact head SHA, current copied
-branch, and copied-head `push` CI immediately before publication. Trusted
-tooling from `main` gives every published crate the same ephemeral version and
-synchronizes internal dependency requirements:
-
-```text
-<base>-0.pr.<pr-number>.commit.sha<12-hex-sha>
-```
-
-For example, pull request 123 at `0123456789abcdef` from a `0.4.0-rc.2`
-workspace becomes `0.4.0-0.pr.123.commit.sha0123456789ab`. The workflow permits
-the resulting dirty checkout so it does not commit to or mutate the
-contributor's branch.
-
-Snapshots use the separate `crates-io-pr` Trusted Publisher environment. They
-publish in this dependency order:
-
-1. `yaml-sigil-core`;
-2. `yaml-sigil-transcription`;
-3. `yaml-sigil-signing`; and
-4. `yaml-sigil-verification`.
-
-Validation alone uses a documented temporary Cargo patch for unpublished
-intra-workspace dependencies. Publication does not use that patch. Release-plz
-publishes and waits for registry availability in dependency order. Snapshots
-create no tags or GitHub Releases, retain no artifact, and do not advance the
-official RC train.
 
 ## Validate an official release
 

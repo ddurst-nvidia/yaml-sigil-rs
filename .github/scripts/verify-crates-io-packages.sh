@@ -90,12 +90,16 @@ for crate in "$@"; do
       echo "crates.io returned HTTP ${status} for ${crate} ${version}." >&2
       exit 1
     fi
-    # Stop only after the exact non-yanked version becomes visible.
-    if [[ "${status}" == "200" ]] \
-      && jq --exit-status --arg version "${version}" \
+    # A successful exact-version response is authoritative. A yanked or
+    # malformed record is a hard failure rather than publication lag.
+    if [[ "${status}" == "200" ]]; then
+      if jq --exit-status --arg version "${version}" \
         '.version.num == $version and .version.yanked == false' \
         "${response_file}" >/dev/null; then
-      break
+        break
+      fi
+      echo "crates.io did not report ${crate} ${version} as non-yanked." >&2
+      exit 1
     fi
     # Readiness absence is an ordered wait state, not a failed workflow.
     if [[ "${mode}" == "check" ]]; then
