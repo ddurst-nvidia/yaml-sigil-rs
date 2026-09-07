@@ -13,6 +13,11 @@ each signing request.
 - `sign_yaml` and `sign_proto` provide form-specific convenience wrappers.
 - `sign_with_resource_limits`, `sign_yaml_with_resource_limits`, and
   `sign_proto_with_resource_limits` enforce an explicit complete-output policy.
+- `sign_with_provider` accepts a qualified provider key, while
+  `sign_with_unqualified_provider` makes the deliberate bypass explicit. Their
+  `_and_resource_limits` variants apply the same output policy.
+- `ProviderSigningKeyBuilder` binds a synchronous `signature` 2.2 signer to
+  canonical public-key bytes and offers `build` and `build_unqualified`.
 - `EncodeError` and `EncodeErrorKind` re-export the common protobuf format
   error used by resource-aware protobuf output.
 - `DefaultSigner` and `DefaultAsyncSigner` delegate to the free functions.
@@ -30,6 +35,38 @@ crate's free functions and default signers use the RustCrypto types above.
 `SigningKey` debug output is redacted by design. Do not log private keys, seed
 material, tokens, or raw signatures on trusted fact surfaces.
 
+## Local provider signing
+
+Use `ProviderSigningKeyBuilder::ed25519` with a 32-octet canonical compressed
+public key or `ProviderSigningKeyBuilder::ecdsa_p256_sha256` with a 65-octet
+uncompressed public key from *Standards for Efficient Cryptography 1 (SEC 1)*.
+The builder receives only a synchronous `signature::Signer<[u8; 64]>` adapter
+and the corresponding public key. It does not request or expose private-key
+bytes.
+
+`build` is the preferred path. It validates the public key and self-verifies
+every signature produced for a real request before returning an artifact. It
+does not ask the signer to process a hidden qualification message.
+`build_unqualified` skips cryptographic output verification, but still
+validates the public key and requires structurally valid signature octets. Use
+the explicitly named unqualified signing functions with that key type.
+
+YamlSigil checks the algorithm's public-key admissibility and, on the qualified
+path, proves that each returned signature matches the bound public key and
+real payload. The provider remains responsible for private-key generation
+quality, entropy, storage, access policy, and other properties hidden behind
+its opaque handle.
+
+The provider receives the final message bytes. YAML signing applies any
+authorized final-line-feed normalization first. Protobuf payload bytes remain
+unchanged. The boundary does not accept a prehash. A P-256 adapter applies
+SHA-256 exactly once and returns raw 64-octet big-endian `r || s`; DER is not a
+provider output format. Ed25519 returns canonical 64-octet `R || S`.
+
+Provider support or successful output self-verification does not establish or
+imply FIPS validation. Such a claim depends on the complete provider build,
+configuration, platform, operational boundary, and deployment.
+
 ## Resource boundaries
 
 The resource-aware signing functions validate the bounded request shape first.
@@ -43,6 +80,10 @@ projected final line feed and the minimum carrier encoding. After signing and
 carrier serialization, they check the exact output size before allocating the
 complete artifact. Passing the lower-bound check never replaces that final
 exact check.
+
+The provider-aware resource functions use the same ordering. They reject a
+conclusive oversized output before avoidable provider work and still apply the
+final exact YAML check after a successful provider operation.
 
 The resource-aware transcoding functions check the original source before
 parsing and check the complete destination independently before allocation.
@@ -58,3 +99,13 @@ boundary, or an equivalent earlier raw-input bound, is required to protect an
 existing caller. The policy is operational hardening, not YamlSigil `v1alpha1`
 conformance. The 16,384-octet YAML signature-carrier constraint remains
 separate.
+
+## Third-party material
+
+NVIDIA-authored crate material is licensed under Apache-2.0. RFC 8032-derived
+point-encoding, scalar, challenge, and verification rules in
+`src/provider_crypto.rs` retain their source attribution and terms. The P-256
+provider boundary follows point-encoding behavior from *Standards for
+Efficient Cryptography 1 (SEC 1)*. The applicable notices and source terms are
+retained in
+[`THIRD_PARTY_NOTICES.md`](https://github.com/NVIDIA/yaml-sigil-rs/blob/main/crates/yaml-sigil-signing/THIRD_PARTY_NOTICES.md).

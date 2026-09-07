@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add synchronous provider-neutral verification with per-algorithm
+  qualification, bound provider keys, and an explicit unqualified path.
+
 ## [0.5.0](https://github.com/NVIDIA/yaml-sigil-rs/compare/yaml-sigil-verification-v0.5.0-rc.2...yaml-sigil-verification-v0.5.0) - 2026-09-06
 
 ### Other
