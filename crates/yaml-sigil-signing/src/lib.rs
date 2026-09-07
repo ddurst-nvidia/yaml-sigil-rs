@@ -19,10 +19,25 @@
 //! before avoidable content processing, cryptography, and complete-output
 //! allocation. This policy is operational hardening, not YamlSigil `v1alpha1`
 //! conformance.
+//!
+//! # Local providers
+//!
+//! [`ProviderSigningKeyBuilder`] accepts synchronous `signature` 2.2 adapters
+//! without exposing private-key material. [`sign_with_provider`] uses the
+//! qualified key path, which validates the bound public key and self-verifies
+//! every real output. [`sign_with_unqualified_provider`] names the deliberate
+//! bypass. The provider receives message bytes, not a prehash.
 
 mod proto_carrier;
+pub mod provider;
+mod provider_crypto;
 pub mod transcription;
 
+pub use provider::{
+    ProviderSignRequest, ProviderSigningKey, ProviderSigningKeyBuilder, ProviderSigningKeyError,
+    ProviderSigningKeyErrorKind, ProviderSigningKeys, UnqualifiedProviderSignRequest,
+    UnqualifiedProviderSigningKey, UnqualifiedProviderSigningKeys,
+};
 pub use transcription::{
     TranscodeError, proto_wire_to_signed_yaml_stream,
     proto_wire_to_signed_yaml_stream_with_resource_limits, signed_yaml_stream_to_proto_wire,
@@ -95,7 +110,9 @@ pub struct SignProtoParams<'a> {
     pub append_missing_final_newline: bool,
 }
 
-fn validate_invocation_shape(req: &SignRequest<'_>) -> Result<(), SignInvocationError> {
+fn validate_invocation_shape<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
+) -> Result<(), SignInvocationError> {
     let caps = signer_capabilities();
     if !caps.supported_output_forms.contains(&req.output_form) {
         return Err(SignInvocationError::InvalidOrUnsupportedOutputForm);
@@ -113,13 +130,15 @@ fn validate_invocation_shape(req: &SignRequest<'_>) -> Result<(), SignInvocation
         }
     }
     match (&req.algorithm, &req.key) {
-        (AlgorithmId::Ed25519, SigningKey::Ed25519(_)) => Ok(()),
-        (AlgorithmId::EcdsaP256Sha256, SigningKey::EcdsaP256Sha256(_)) => Ok(()),
+        (AlgorithmId::Ed25519, GenericSigningKey::Ed25519(_)) => Ok(()),
+        (AlgorithmId::EcdsaP256Sha256, GenericSigningKey::EcdsaP256Sha256(_)) => Ok(()),
         _ => Err(SignInvocationError::InvalidOrUnsupportedAlgorithm),
     }
 }
 
-fn validate_keyid_content(req: &SignRequest<'_>) -> Result<(), SignInvocationError> {
+fn validate_keyid_content<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
+) -> Result<(), SignInvocationError> {
     if req.keyid.is_some_and(|keyid| keyid.contains(['\r', '\n'])) {
         Err(SignInvocationError::InvalidKeyid)
     } else {
@@ -127,7 +146,9 @@ fn validate_keyid_content(req: &SignRequest<'_>) -> Result<(), SignInvocationErr
     }
 }
 
-fn validate_invocation(req: &SignRequest<'_>) -> Result<(), SignInvocationError> {
+fn validate_invocation<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
+) -> Result<(), SignInvocationError> {
     validate_invocation_shape(req)?;
     validate_keyid_content(req)
 }
@@ -167,8 +188,8 @@ fn varint_len(mut value: u64) -> u64 {
     length
 }
 
-fn checked_yaml_signing_lower_bound(
-    req: &SignRequest<'_>,
+fn checked_yaml_signing_lower_bound<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     limits: &ArtifactResourceLimits,
 ) -> ArtifactResourceResult<usize> {
     let overflow = || limits.size_computation_overflow(ArtifactResourceForm::Yaml);
@@ -220,8 +241,8 @@ fn checked_len_field_size(value_len: u64) -> Option<u64> {
         .and_then(|size| size.checked_add(value_len))
 }
 
-fn checked_proto_signing_size(
-    req: &SignRequest<'_>,
+fn checked_proto_signing_size<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     limits: &ArtifactResourceLimits,
 ) -> ArtifactResourceResult<Result<usize, EncodeError>> {
     let overflow = || limits.size_computation_overflow(ArtifactResourceForm::Protobuf);
@@ -262,8 +283,8 @@ fn checked_proto_signing_size_from_lengths(
     Ok(check_encoded_message_size(encoded_size))
 }
 
-fn preflight_signing_output(
-    req: &SignRequest<'_>,
+fn preflight_signing_output<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     limits: &ArtifactResourceLimits,
 ) -> ArtifactResourceResult<Result<usize, EncodeError>> {
     match req.output_form {
@@ -307,20 +328,171 @@ pub fn sign_with_resource_limits(
     if let Err(error) = validate_keyid_content(req) {
         return Ok(Ok(SignOutcome::Invocation(error)));
     }
-    Ok(Ok(sign_after_invocation_validation(req, Some(limits))?))
+    Ok(Ok(sign_after_invocation_validation(
+        req,
+        Some(limits),
+        |payload| sign_digest(payload, req.algorithm, &req.key),
+    )?))
+}
+
+fn qualified_provider_key_matches_request(req: &ProviderSignRequest<'_>) -> bool {
+    match (&req.algorithm, &req.key) {
+        (AlgorithmId::Ed25519, GenericSigningKey::Ed25519(key))
+        | (AlgorithmId::EcdsaP256Sha256, GenericSigningKey::EcdsaP256Sha256(key)) => {
+            key.algorithm() == req.algorithm
+        }
+        _ => false,
+    }
+}
+
+fn unqualified_provider_key_matches_request(req: &UnqualifiedProviderSignRequest<'_>) -> bool {
+    match (&req.algorithm, &req.key) {
+        (AlgorithmId::Ed25519, GenericSigningKey::Ed25519(key))
+        | (AlgorithmId::EcdsaP256Sha256, GenericSigningKey::EcdsaP256Sha256(key)) => {
+            key.algorithm() == req.algorithm
+        }
+        _ => false,
+    }
+}
+
+fn sign_with_qualified_provider_key(
+    payload: &[u8],
+    req: &ProviderSignRequest<'_>,
+) -> Result<[u8; 64], SignError> {
+    match (req.algorithm, &req.key) {
+        (AlgorithmId::Ed25519, GenericSigningKey::Ed25519(key))
+        | (AlgorithmId::EcdsaP256Sha256, GenericSigningKey::EcdsaP256Sha256(key)) => {
+            key.try_sign(payload)
+        }
+        _ => Err(SignError::InvalidOrUnsupportedAlgorithm),
+    }
+}
+
+fn sign_with_unqualified_provider_key(
+    payload: &[u8],
+    req: &UnqualifiedProviderSignRequest<'_>,
+) -> Result<[u8; 64], SignError> {
+    match (req.algorithm, &req.key) {
+        (AlgorithmId::Ed25519, GenericSigningKey::Ed25519(key))
+        | (AlgorithmId::EcdsaP256Sha256, GenericSigningKey::EcdsaP256Sha256(key)) => {
+            key.try_sign(payload)
+        }
+        _ => Err(SignError::InvalidOrUnsupportedAlgorithm),
+    }
+}
+
+/// Sign with a local provider key that self-verifies every real signature.
+///
+/// The provider receives the final payload bytes, after any permitted YAML
+/// line-ending normalization. No additional qualification message is signed.
+/// This entry point retains the existing unbounded output behavior; use
+/// [`sign_with_provider_and_resource_limits`] at a bounded output boundary.
+#[instrument(level = "info", skip(req), fields(alg = ?req.algorithm, form = ?req.output_form))]
+pub fn sign_with_provider(req: &ProviderSignRequest<'_>) -> SignOutcome {
+    if let Err(error) = validate_invocation(req) {
+        return SignOutcome::Invocation(error);
+    }
+    if !qualified_provider_key_matches_request(req) {
+        return SignOutcome::Invocation(SignInvocationError::InvalidOrUnsupportedAlgorithm);
+    }
+    sign_after_invocation_validation(req, None, |payload| {
+        sign_with_qualified_provider_key(payload, req)
+    })
+    .expect("the unbounded provider signing path cannot return a resource error")
+}
+
+/// Sign with a qualified local provider key after output resource admission.
+///
+/// Request-shape and provider-key selection checks are bounded independently
+/// of the payload. Protobuf output is sized exactly, and YAML output applies a
+/// conclusive lower bound, before payload processing or provider invocation.
+#[instrument(level = "info", skip(req, limits), fields(alg = ?req.algorithm, form = ?req.output_form))]
+pub fn sign_with_provider_and_resource_limits(
+    req: &ProviderSignRequest<'_>,
+    limits: &ArtifactResourceLimits,
+) -> ArtifactResourceResult<Result<SignOutcome, EncodeError>> {
+    if let Err(error) = validate_invocation_shape(req) {
+        return Ok(Ok(SignOutcome::Invocation(error)));
+    }
+    if !qualified_provider_key_matches_request(req) {
+        return Ok(Ok(SignOutcome::Invocation(
+            SignInvocationError::InvalidOrUnsupportedAlgorithm,
+        )));
+    }
+    if let Err(error) = preflight_signing_output(req, limits)? {
+        return Ok(Err(error));
+    }
+    if let Err(error) = validate_keyid_content(req) {
+        return Ok(Ok(SignOutcome::Invocation(error)));
+    }
+    Ok(Ok(sign_after_invocation_validation(
+        req,
+        Some(limits),
+        |payload| sign_with_qualified_provider_key(payload, req),
+    )?))
+}
+
+/// Sign through the explicitly unqualified provider path.
+///
+/// This path validates the bound public key and provider signature structure,
+/// but it does not cryptographically confirm that a produced signature
+/// corresponds to the bound public key and payload.
+#[instrument(level = "info", skip(req), fields(alg = ?req.algorithm, form = ?req.output_form))]
+pub fn sign_with_unqualified_provider(req: &UnqualifiedProviderSignRequest<'_>) -> SignOutcome {
+    if let Err(error) = validate_invocation(req) {
+        return SignOutcome::Invocation(error);
+    }
+    if !unqualified_provider_key_matches_request(req) {
+        return SignOutcome::Invocation(SignInvocationError::InvalidOrUnsupportedAlgorithm);
+    }
+    sign_after_invocation_validation(req, None, |payload| {
+        sign_with_unqualified_provider_key(payload, req)
+    })
+    .expect("the unbounded provider signing path cannot return a resource error")
+}
+
+/// Sign through the explicitly unqualified provider path after output
+/// resource admission.
+#[instrument(level = "info", skip(req, limits), fields(alg = ?req.algorithm, form = ?req.output_form))]
+pub fn sign_with_unqualified_provider_and_resource_limits(
+    req: &UnqualifiedProviderSignRequest<'_>,
+    limits: &ArtifactResourceLimits,
+) -> ArtifactResourceResult<Result<SignOutcome, EncodeError>> {
+    if let Err(error) = validate_invocation_shape(req) {
+        return Ok(Ok(SignOutcome::Invocation(error)));
+    }
+    if !unqualified_provider_key_matches_request(req) {
+        return Ok(Ok(SignOutcome::Invocation(
+            SignInvocationError::InvalidOrUnsupportedAlgorithm,
+        )));
+    }
+    if let Err(error) = preflight_signing_output(req, limits)? {
+        return Ok(Err(error));
+    }
+    if let Err(error) = validate_keyid_content(req) {
+        return Ok(Ok(SignOutcome::Invocation(error)));
+    }
+    Ok(Ok(sign_after_invocation_validation(
+        req,
+        Some(limits),
+        |payload| sign_with_unqualified_provider_key(payload, req),
+    )?))
 }
 
 fn sign_inner(req: &SignRequest<'_>) -> SignOutcome {
     if let Err(e) = validate_invocation(req) {
         return SignOutcome::Invocation(e);
     }
-    sign_after_invocation_validation(req, None)
-        .expect("the unbounded signing path cannot return a resource error")
+    sign_after_invocation_validation(req, None, |payload| {
+        sign_digest(payload, req.algorithm, &req.key)
+    })
+    .expect("the unbounded signing path cannot return a resource error")
 }
 
-fn sign_after_invocation_validation(
-    req: &SignRequest<'_>,
+fn sign_after_invocation_validation<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     limits: Option<&ArtifactResourceLimits>,
+    sign_payload: impl FnOnce(&[u8]) -> Result<[u8; 64], SignError>,
 ) -> ArtifactResourceResult<SignOutcome> {
     // Only YAML output applies the YAML envelope rules: valid UTF-8, no BOM,
     // and a final line terminator. Protobuf payloads are opaque bytes and must
@@ -346,7 +518,7 @@ fn sign_after_invocation_validation(
         payload.clone()
     };
 
-    let sig_bytes = match sign_digest(&payload, req.algorithm, &req.key) {
+    let sig_bytes = match sign_payload(&payload) {
         Ok(b) => b,
         Err(e) => return Ok(SignOutcome::Signer(e)),
     };
@@ -375,9 +547,9 @@ fn sign_after_invocation_validation(
     }))
 }
 
-fn emit_yaml_artifact(
+fn emit_yaml_artifact<Ed25519: ?Sized, P256: ?Sized>(
     payload: &[u8],
-    req: &SignRequest<'_>,
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     sig_bytes: &[u8],
 ) -> Result<Vec<u8>, SignError> {
     let body = serialize_yaml_signature_carrier(req, sig_bytes)?;
@@ -395,8 +567,8 @@ fn emit_yaml_artifact(
     }
 }
 
-fn serialize_yaml_signature_carrier(
-    req: &SignRequest<'_>,
+fn serialize_yaml_signature_carrier<Ed25519: ?Sized, P256: ?Sized>(
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     sig_bytes: &[u8],
 ) -> Result<String, SignError> {
     let doc = SignatureDocument {
@@ -417,9 +589,9 @@ fn serialize_yaml_signature_carrier(
     Ok(body)
 }
 
-fn emit_yaml_artifact_with_resource_limits(
+fn emit_yaml_artifact_with_resource_limits<Ed25519: ?Sized, P256: ?Sized>(
     payload: &[u8],
-    req: &SignRequest<'_>,
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     sig_bytes: &[u8],
     limits: &ArtifactResourceLimits,
 ) -> ArtifactResourceResult<Result<Vec<u8>, SignError>> {
@@ -452,9 +624,9 @@ fn emit_yaml_artifact_with_resource_limits(
     }
 }
 
-fn emit_proto_artifact(
+fn emit_proto_artifact<Ed25519: ?Sized, P256: ?Sized>(
     payload: &[u8],
-    req: &SignRequest<'_>,
+    req: &GenericSignRequest<'_, Ed25519, P256>,
     sig_bytes: &[u8],
 ) -> Result<Vec<u8>, SignError> {
     let carrier = proto_carrier::encode_inner_signature_carrier(
@@ -507,7 +679,9 @@ pub fn sign_yaml_with_resource_limits(
     if let Err(error) = validate_keyid_content(&request) {
         return Ok(Err(map_invocation_to_sign_error(error)));
     }
-    let outcome = sign_after_invocation_validation(&request, Some(limits))?;
+    let outcome = sign_after_invocation_validation(&request, Some(limits), |payload| {
+        sign_digest(payload, request.algorithm, &request.key)
+    })?;
     Ok(match outcome {
         SignOutcome::Success(success) => Ok(success.artifact),
         SignOutcome::Invocation(error) => Err(map_invocation_to_sign_error(error)),
@@ -581,11 +755,11 @@ fn sign_digest(
     payload: &[u8],
     algorithm: AlgorithmId,
     key: &SigningKey<'_>,
-) -> Result<Vec<u8>, SignError> {
+) -> Result<[u8; 64], SignError> {
     match (algorithm, key) {
         (AlgorithmId::Ed25519, SigningKey::Ed25519(sk)) => {
             use ed25519_dalek::Signer;
-            Ok(sk.sign(payload).to_bytes().to_vec())
+            Ok(sk.sign(payload).to_bytes())
         }
         (AlgorithmId::EcdsaP256Sha256, SigningKey::EcdsaP256Sha256(sk)) => {
             use p256::ecdsa::signature::Signer;
@@ -593,7 +767,7 @@ fn sign_digest(
                 .try_sign(payload)
                 .map_err(|_| SignError::KeyOperationFailure)?;
             // Raw R || S 64 octets.
-            Ok(sig.to_bytes().to_vec())
+            Ok(sig.to_bytes().into())
         }
         _ => Err(SignError::InvalidOrUnsupportedAlgorithm),
     }
@@ -642,8 +816,36 @@ impl AsyncSigner for DefaultAsyncSigner {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+
     use super::*;
     use ed25519_dalek::SigningKey as EdSk;
+
+    struct CapturingEd25519Signer {
+        key: EdSk,
+        calls: Cell<usize>,
+        messages: RefCell<Vec<Vec<u8>>>,
+    }
+
+    impl CapturingEd25519Signer {
+        fn new(seed: u8) -> Self {
+            Self {
+                key: EdSk::from_bytes(&[seed; 32]),
+                calls: Cell::new(0),
+                messages: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl signature::Signer<[u8; 64]> for CapturingEd25519Signer {
+        fn try_sign(&self, message: &[u8]) -> Result<[u8; 64], signature::Error> {
+            self.calls.set(self.calls.get() + 1);
+            self.messages.borrow_mut().push(message.to_vec());
+            let signature: ed25519_dalek::Signature =
+                signature::Signer::try_sign(&self.key, message)?;
+            Ok(signature.to_bytes())
+        }
+    }
 
     fn finite(maximum: usize) -> ArtifactResourceLimits {
         ArtifactResourceLimits::unbounded()
@@ -926,6 +1128,187 @@ mod tests {
                 .unwrap(),
             artifact
         );
+    }
+
+    #[test]
+    fn qualified_provider_receives_exact_final_yaml_and_protobuf_payloads() {
+        let signer = CapturingEd25519Signer::new(20);
+        let public_key = signer.key.verifying_key().to_bytes();
+        let key = ProviderSigningKeyBuilder::ed25519(&signer, &public_key)
+            .build()
+            .unwrap();
+        let yaml_request = ProviderSignRequest {
+            payload: b"provider: yaml",
+            algorithm: AlgorithmId::Ed25519,
+            key: ProviderSigningKeys::Ed25519(&key),
+            keyid: None,
+            append_missing_final_newline: true,
+            output_form: OutputForm::Yaml,
+            algorithm_parameters: &[],
+        };
+        let SignOutcome::Success(yaml_success) = sign_with_provider(&yaml_request) else {
+            panic!("qualified YAML provider signing failed");
+        };
+        assert_eq!(yaml_success.modified_payload, b"provider: yaml\n");
+        assert!(yaml_success.artifact.starts_with(b"provider: yaml\n---\n"));
+        assert_eq!(signer.messages.borrow()[0], b"provider: yaml\n");
+
+        let protobuf_payload = [0xff, 0x00, 0x80, 0x0a];
+        let protobuf_request = ProviderSignRequest {
+            payload: &protobuf_payload,
+            algorithm: AlgorithmId::Ed25519,
+            key: ProviderSigningKeys::Ed25519(&key),
+            keyid: Some("provider-key"),
+            append_missing_final_newline: true,
+            output_form: OutputForm::Protobuf,
+            algorithm_parameters: &[],
+        };
+        assert!(matches!(
+            sign_with_provider(&protobuf_request),
+            SignOutcome::Success(_)
+        ));
+        assert_eq!(signer.messages.borrow()[1], protobuf_payload);
+    }
+
+    #[test]
+    fn provider_output_self_verification_is_mandatory_on_qualified_path() {
+        let signer = CapturingEd25519Signer::new(21);
+        let other_key = EdSk::from_bytes(&[22; 32]);
+        let qualified =
+            ProviderSigningKeyBuilder::ed25519(&signer, other_key.verifying_key().as_bytes())
+                .build()
+                .unwrap();
+        let request = ProviderSignRequest {
+            payload: b"provider: mismatch\n",
+            algorithm: AlgorithmId::Ed25519,
+            key: ProviderSigningKeys::Ed25519(&qualified),
+            keyid: None,
+            append_missing_final_newline: false,
+            output_form: OutputForm::Yaml,
+            algorithm_parameters: &[],
+        };
+        assert!(matches!(
+            sign_with_provider(&request),
+            SignOutcome::Signer(SignError::KeyOperationFailure)
+        ));
+
+        let unqualified =
+            ProviderSigningKeyBuilder::ed25519(&signer, other_key.verifying_key().as_bytes())
+                .build_unqualified()
+                .unwrap();
+        let request = UnqualifiedProviderSignRequest {
+            payload: b"provider: mismatch\n",
+            algorithm: AlgorithmId::Ed25519,
+            key: UnqualifiedProviderSigningKeys::Ed25519(&unqualified),
+            keyid: None,
+            append_missing_final_newline: false,
+            output_form: OutputForm::Yaml,
+            algorithm_parameters: &[],
+        };
+        assert!(matches!(
+            sign_with_unqualified_provider(&request),
+            SignOutcome::Success(_)
+        ));
+    }
+
+    #[test]
+    fn provider_resource_preflight_precedes_payload_scan_and_signing() {
+        let signer = CapturingEd25519Signer::new(23);
+        let public_key = signer.key.verifying_key().to_bytes();
+        let key = ProviderSigningKeyBuilder::ed25519(&signer, &public_key)
+            .build()
+            .unwrap();
+        let invalid_shape = ProviderSignRequest {
+            payload: &[0xff; 32],
+            algorithm: AlgorithmId::Ed25519,
+            key: ProviderSigningKeys::Ed25519(&key),
+            keyid: None,
+            append_missing_final_newline: false,
+            output_form: OutputForm::Yaml,
+            algorithm_parameters: &[1],
+        };
+        assert!(matches!(
+            sign_with_provider_and_resource_limits(&invalid_shape, &finite(1))
+                .unwrap()
+                .unwrap(),
+            SignOutcome::Invocation(SignInvocationError::InvalidAlgorithmParameters)
+        ));
+
+        for output_form in [OutputForm::Yaml, OutputForm::Protobuf] {
+            let request = ProviderSignRequest {
+                payload: &[0xff; 32],
+                algorithm: AlgorithmId::Ed25519,
+                key: ProviderSigningKeys::Ed25519(&key),
+                keyid: Some("line\nbreak"),
+                append_missing_final_newline: false,
+                output_form,
+                algorithm_parameters: &[],
+            };
+            let error = sign_with_provider_and_resource_limits(&request, &finite(1)).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ArtifactResourceErrorKind::OutputArtifactTooLarge
+            );
+            assert_eq!(
+                error.observed_or_projected_artifact_bytes(),
+                match output_form {
+                    OutputForm::Yaml => None,
+                    OutputForm::Protobuf => Some(
+                        checked_proto_signing_size(&request, &ArtifactResourceLimits::unbounded(),)
+                            .unwrap()
+                            .unwrap(),
+                    ),
+                }
+            );
+        }
+        assert_eq!(signer.calls.get(), 0);
+    }
+
+    #[test]
+    fn qualified_provider_yaml_signing_keeps_the_final_exact_check() {
+        let signer = CapturingEd25519Signer::new(24);
+        let public_key = signer.key.verifying_key().to_bytes();
+        let key = ProviderSigningKeyBuilder::ed25519(&signer, &public_key)
+            .build()
+            .unwrap();
+        let request = ProviderSignRequest {
+            payload: b"provider: exact",
+            algorithm: AlgorithmId::Ed25519,
+            key: ProviderSigningKeys::Ed25519(&key),
+            keyid: Some("quoted\"key"),
+            append_missing_final_newline: true,
+            output_form: OutputForm::Yaml,
+            algorithm_parameters: &[],
+        };
+        let lower_bound =
+            checked_yaml_signing_lower_bound(&request, &ArtifactResourceLimits::unbounded())
+                .unwrap();
+        let SignOutcome::Success(success) = sign_with_provider(&request) else {
+            panic!("qualified provider signing failed");
+        };
+        assert!(lower_bound < success.artifact.len());
+        assert_eq!(signer.calls.get(), 1);
+
+        let error =
+            sign_with_provider_and_resource_limits(&request, &finite(success.artifact.len() - 1))
+                .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ArtifactResourceErrorKind::OutputArtifactTooLarge
+        );
+        assert_eq!(
+            error.observed_or_projected_artifact_bytes(),
+            Some(success.artifact.len())
+        );
+        assert_eq!(signer.calls.get(), 2);
+
+        assert!(matches!(
+            sign_with_provider_and_resource_limits(&request, &finite(success.artifact.len()))
+                .unwrap()
+                .unwrap(),
+            SignOutcome::Success(_)
+        ));
+        assert_eq!(signer.calls.get(), 3);
     }
 
     #[test]
